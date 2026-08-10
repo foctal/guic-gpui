@@ -1,0 +1,20 @@
+[package]
+name = "guic-gpui-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11", "runtime_shaders", "test-support"] }
+gpui_tokio.workspace = true
+http_client = { workspace = true, features = ["test-support"] }
+url.workspace = true
+
+[lints]
+workspace = true
+

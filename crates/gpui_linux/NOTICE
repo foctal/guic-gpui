@@ -1,0 +1,13 @@
+guic-gpui
+Copyright 2026 guic-gpui contributors
+
+This product includes software developed by Zed Industries and contributors,
+available from https://github.com/zed-industries/zed under the Apache License 2.0.
+
+This independent fork is not an official Zed or GPUI release and is not
+endorsed by Zed Industries.
+
+Bundled font files include IBM Plex Sans and Lilex, distributed under the SIL
+Open Font License 1.1.
+
+Original font copyright and license notices are preserved with the font files.

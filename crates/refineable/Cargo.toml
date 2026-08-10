@@ -1,0 +1,25 @@
+[package]
+name = "guic-gpui-refineable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-refineable"
+readme = "README.md"
+publish.workspace = true
+description = "Refinement API used by guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/refineable.rs"
+doctest = false
+
+[dependencies]
+derive_refineable.workspace = true

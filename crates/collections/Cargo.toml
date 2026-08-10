@@ -1,0 +1,30 @@
+[package]
+name = "guic-gpui-collections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-collections"
+readme = "README.md"
+publish.workspace = true
+description = "Collection aliases and hashing used by guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/collections.rs"
+doctest = false
+
+[features]
+test-support = []
+
+[dependencies]
+indexmap.workspace = true
+rustc-hash.workspace = true
+gpui_util.workspace = true

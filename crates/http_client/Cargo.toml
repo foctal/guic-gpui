@@ -1,0 +1,40 @@
+[package]
+name = "guic-gpui-http-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-http-client"
+readme = "README.md"
+publish.workspace = true
+description = "HTTP abstractions exposed by guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[lib]
+path = "src/http_client.rs"
+doctest = true
+
+[dependencies]
+anyhow.workspace = true
+async-compression.workspace = true
+bytes.workspace = true
+derive_more.workspace = true
+futures.workspace = true
+http-body.workspace = true
+http.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded.workspace = true
+url.workspace = true

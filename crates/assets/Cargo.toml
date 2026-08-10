@@ -1,0 +1,21 @@
+[package]
+name = "guic-gpui-assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "Apache-2.0 AND OFL-1.1"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-assets"
+readme = "README.md"
+publish.workspace = true
+description = "Bundled fonts used by guic-gpui."
+keywords = ["gui", "fonts", "gpui"]
+categories = ["gui"]
+
+[dev-dependencies]
+ttf-parser.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+[package]
+name = "guic-gpui-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-scheduler"
+readme = "README.md"
+publish.workspace = true
+description = "Executor scheduling support for guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/scheduler.rs"
+doctest = false
+
+[features]
+test-support = []
+
+[dependencies]
+async-task.workspace = true
+backtrace.workspace = true
+chrono.workspace = true
+flume.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+web-time.workspace = true

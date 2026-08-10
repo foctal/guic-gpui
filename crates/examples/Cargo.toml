@@ -1,0 +1,22 @@
+[package]
+name = "guic-gpui-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gpui.workspace = true
+gpui_macros.workspace = true
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "derive_context"
+path = "macro_tests/derive_context.rs"

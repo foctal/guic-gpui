@@ -1,0 +1,25 @@
+[package]
+name = "guic-gpui-util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-util"
+readme = "README.md"
+publish.workspace = true
+description = "Utilities shared by guic-gpui packages."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+which.workspace = true
+
+[lints]
+workspace = true

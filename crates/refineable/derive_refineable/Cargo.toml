@@ -1,0 +1,28 @@
+[package]
+name = "guic-gpui-derive-refineable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-derive-refineable"
+readme = "README.md"
+publish.workspace = true
+description = "Derive macro for guic-gpui refinement types."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/derive_refineable.rs"
+proc-macro = true
+doctest = false
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

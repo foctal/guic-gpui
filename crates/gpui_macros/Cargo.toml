@@ -1,0 +1,32 @@
+[package]
+name = "guic-gpui-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-macros"
+readme = "README.md"
+publish.workspace = true
+description = "Procedural macros for guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[features]
+inspector = []
+
+[lib]
+path = "src/gpui_macros.rs"
+proc-macro = true
+doctest = false
+
+[dependencies]
+heck.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

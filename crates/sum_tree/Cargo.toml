@@ -1,0 +1,40 @@
+[package]
+name = "guic-gpui-sum-tree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-sum-tree"
+readme = "README.md"
+publish.workspace = true
+description = "Concurrency-friendly sum tree used by guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/sum_tree.rs"
+doctest = false
+
+[dependencies]
+heapless.workspace = true
+rayon.workspace = true
+log.workspace = true
+tracing.workspace = true
+proptest = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand.workspace = true
+proptest.workspace = true
+
+
+[package.metadata.cargo-machete]
+ignored = ["tracing"]
+
+[features]
+test-support = ["proptest"]

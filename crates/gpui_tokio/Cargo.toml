@@ -1,0 +1,28 @@
+[package]
+name = "guic-gpui-tokio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-tokio"
+readme = "README.md"
+publish.workspace = true
+description = "Tokio integration for guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_tokio.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui_util.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

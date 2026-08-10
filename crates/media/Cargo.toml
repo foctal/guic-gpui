@@ -1,0 +1,36 @@
+[package]
+name = "guic-gpui-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-media"
+readme = "README.md"
+publish.workspace = true
+description = "macOS media bindings used by guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/media.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+ctor.workspace = true
+foreign-types.workspace = true
+metal.workspace = true
+core-video.workspace = true
+objc.workspace = true
+
+[build-dependencies]
+bindgen = "0.71"

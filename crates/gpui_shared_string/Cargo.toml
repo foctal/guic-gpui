@@ -1,0 +1,26 @@
+[package]
+name = "guic-gpui-shared-string"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-shared-string"
+readme = "README.md"
+publish.workspace = true
+description = "Shared string representation for guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lib]
+path = "gpui_shared_string.rs"
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+smol_str = "0.3.6"
+
+[lints]
+workspace = true

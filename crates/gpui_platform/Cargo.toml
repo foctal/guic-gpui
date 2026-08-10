@@ -1,0 +1,46 @@
+[package]
+name = "guic-gpui-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/guic-gpui-platform"
+readme = "README.md"
+publish.workspace = true
+description = "Platform selection and application constructors for guic-gpui."
+keywords = ["gui", "desktop", "gpui"]
+categories = ["gui"]
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_platform.rs"
+
+[features]
+default = []
+font-kit = ["gpui_macos/font-kit"]
+test-support = ["gpui/test-support", "gpui_macos/test-support"]
+runtime_shaders = ["gpui_macos/runtime_shaders"]
+wayland = ["gpui_linux/wayland"]
+x11 = ["gpui_linux/x11"]
+
+[dependencies]
+gpui.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows.workspace = true
+gpui = { workspace = true, features = ["windows-manifest"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_linux.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+gpui_web.workspace = true
+console_error_panic_hook.workspace = true
