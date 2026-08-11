@@ -1,8 +1,8 @@
 # guic-gpui-media
 
-macOS media bindings used by `guic-gpui`.
+Rust bindings for the Core Media and Core Video types used by `guic-gpui` on
+macOS.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

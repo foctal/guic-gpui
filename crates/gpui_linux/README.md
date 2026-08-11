@@ -1,8 +1,8 @@
 # guic-gpui-linux
 
-The Linux and FreeBSD platform backend for `guic-gpui`.
+The Linux and FreeBSD platform backend for `guic-gpui`, with Wayland, X11, and
+headless support.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.
