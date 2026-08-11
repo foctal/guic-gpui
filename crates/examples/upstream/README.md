@@ -1,10 +1,14 @@
 # GPUI Examples
 
-Examples can be run from the Zed repository root:
+The runnable example for this workspace is in [`../src/main.rs`](../src/main.rs).
+Run it from the repository root with:
 
 ```sh
-cargo run -p gpui --example hello_world
+cargo run -p guic-gpui-examples
 ```
+
+The sources in this directory are retained from upstream GPUI as implementation
+references.
 
 ## Where to start
 

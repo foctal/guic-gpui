@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-platform"
 readme = "README.md"
 publish.workspace = true
-description = "Platform selection and application constructors for guic-gpui."
+description = "Cross-platform backend selection and application constructors for guic-gpui."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

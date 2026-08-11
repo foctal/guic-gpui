@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-media"
 readme = "README.md"
 publish.workspace = true
-description = "macOS media bindings used by guic-gpui."
+description = "Core Media and Core Video bindings used by guic-gpui on macOS."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

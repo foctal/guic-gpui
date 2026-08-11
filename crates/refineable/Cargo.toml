@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-refineable"
 readme = "README.md"
 publish.workspace = true
-description = "Refinement API used by guic-gpui."
+description = "Composable partial updates and cascades for style and configuration types."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-macos"
 readme = "README.md"
 publish.workspace = true
-description = "macOS platform backend for guic-gpui."
+description = "macOS backend with native windows, input, accessibility, and Metal rendering."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

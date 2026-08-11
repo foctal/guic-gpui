@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-windows"
 readme = "README.md"
 publish.workspace = true
-description = "Windows platform backend for guic-gpui."
+description = "Windows backend with native windows, input, accessibility, and Direct3D rendering."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

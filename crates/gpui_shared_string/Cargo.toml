@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-shared-string"
 readme = "README.md"
 publish.workspace = true
-description = "Shared string representation for guic-gpui."
+description = "Compact immutable string type designed for cheap cloning."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 
