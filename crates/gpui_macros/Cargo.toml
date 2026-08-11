@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-macros"
 readme = "README.md"
 publish.workspace = true
-description = "Procedural macros for guic-gpui."
+description = "Derive and attribute macros for guic-gpui."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

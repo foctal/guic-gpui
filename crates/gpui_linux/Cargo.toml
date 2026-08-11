@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-linux"
 readme = "README.md"
 publish.workspace = true
-description = "Linux and FreeBSD platform backend for guic-gpui."
+description = "Linux and FreeBSD backend with Wayland, X11, and headless support."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

@@ -1,8 +1,8 @@
 # guic-gpui-macros
 
-Procedural macros for `guic-gpui`.
+Derive and attribute macros for `guic-gpui` actions, rendering, contexts,
+styles, and tests.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

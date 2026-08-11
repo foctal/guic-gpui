@@ -1,8 +1,8 @@
 # guic-gpui-platform
 
-Platform selection and application constructors for `guic-gpui`.
+Platform selection and application constructors for `guic-gpui`, with a
+single entry point across native and WebAssembly targets.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

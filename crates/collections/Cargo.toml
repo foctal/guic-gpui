@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-collections"
 readme = "README.md"
 publish.workspace = true
-description = "Collection aliases and hashing used by guic-gpui."
+description = "Fast hash collections and a compact VecMap for guic-gpui."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

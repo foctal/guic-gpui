@@ -3,24 +3,24 @@
 [![Crates.io](https://img.shields.io/crates/v/guic-gpui.svg)](https://crates.io/crates/guic-gpui)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/foctal/guic-gpui/blob/main/LICENSE)
 
-`guic-gpui` is a GPU-accelerated application framework maintained for GUIC and
-general use. This project started as a fork of Zed's GPUI. It is not
-an official Zed or GPUI release by Zed Industries.
+`guic-gpui` is a GPU-accelerated UI framework for building interactive
+applications in Rust. It is maintained for GUIC and general use. This project
+started as a fork of Zed's GPUI.
 
 ## Installation
 
 ```toml
 [dependencies]
-gpui = { package = "guic-gpui", version = "0.1.0" }
+gpui = { package = "guic-gpui", version = "0.2.0" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.1.0", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+gpui_platform = { package = "guic-gpui-platform", version = "0.2.0", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.1.0", features = ["font-kit"] }
+gpui_platform = { package = "guic-gpui-platform", version = "0.2.0", features = ["font-kit"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.1.0" }
+gpui_platform = { package = "guic-gpui-platform", version = "0.2.0" }
 ```
 
 ## License

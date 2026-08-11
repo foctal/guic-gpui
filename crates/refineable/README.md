@@ -1,8 +1,8 @@
 # guic-gpui-refineable
 
-The refinement API used by `guic-gpui`.
+Composable partial updates and precedence-ordered cascades for `guic-gpui`
+style and configuration types.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

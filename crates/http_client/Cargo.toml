@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-http-client"
 readme = "README.md"
 publish.workspace = true
-description = "HTTP abstractions exposed by guic-gpui."
+description = "Transport-neutral async HTTP client API with proxy, redirect, and test support."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

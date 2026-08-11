@@ -2,6 +2,11 @@
 
 All notable user-visible changes are recorded here.
 
+## [0.2.0] - 2026-08-11
+
+- Clarify the purpose of each crate in its README and package metadata.
+- Correct the workspace example instructions.
+
 ## [0.1.0] - 2026-08-11
 
 - Fork GPUI and its required support crates from Zed commit

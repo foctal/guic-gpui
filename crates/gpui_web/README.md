@@ -1,8 +1,8 @@
 # guic-gpui-web
 
-The experimental WebAssembly backend for `guic-gpui`.
+The experimental WebAssembly backend for `guic-gpui`, connecting canvas
+windows, browser input, and Fetch-based HTTP.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

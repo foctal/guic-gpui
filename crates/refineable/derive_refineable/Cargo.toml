@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-derive-refineable"
 readme = "README.md"
 publish.workspace = true
-description = "Derive macro for guic-gpui refinement types."
+description = "Derive macro for partial refinement types and merging logic."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

@@ -1,8 +1,8 @@
 # guic-gpui
 
-A GPU-accelerated application framework maintained for GUIC.
+The core `guic-gpui` framework, with application state, windows, UI elements,
+and rendering primitives.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

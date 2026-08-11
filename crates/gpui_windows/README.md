@@ -1,8 +1,8 @@
 # guic-gpui-windows
 
-The Windows platform backend for `guic-gpui`.
+The Windows platform backend for `guic-gpui`, providing native windows, input,
+accessibility, and Direct3D rendering.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

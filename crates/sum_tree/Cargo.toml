@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-sum-tree"
 readme = "README.md"
 publish.workspace = true
-description = "Concurrency-friendly sum tree used by guic-gpui."
+description = "Summary tree for efficient seeking and editing of ordered data."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-wgpu"
 readme = "README.md"
 publish.workspace = true
-description = "WGPU renderer for guic-gpui."
+description = "WGPU renderer and text system for guic-gpui."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

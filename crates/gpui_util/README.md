@@ -1,8 +1,8 @@
 # guic-gpui-util
 
-Utilities shared by `guic-gpui` packages.
+Small error-handling, process, future, and collection helpers shared by
+`guic-gpui` crates.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

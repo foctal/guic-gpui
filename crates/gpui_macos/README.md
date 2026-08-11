@@ -1,8 +1,8 @@
 # guic-gpui-macos
 
-The macOS platform backend for `guic-gpui`.
+The macOS platform backend for `guic-gpui`, providing native windows, input,
+text, accessibility, and Metal rendering.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.

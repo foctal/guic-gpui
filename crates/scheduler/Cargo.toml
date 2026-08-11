@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-scheduler"
 readme = "README.md"
 publish.workspace = true
-description = "Executor scheduling support for guic-gpui."
+description = "Task executors, priorities, timers, and a deterministic test scheduler."
 keywords = ["gui", "desktop", "gpui"]
 categories = ["gui"]
 

@@ -10,7 +10,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/guic-gpui-assets"
 readme = "README.md"
 publish.workspace = true
-description = "Bundled fonts used by guic-gpui."
+description = "Embedded IBM Plex Sans and Lilex fonts for guic-gpui."
 keywords = ["gui", "fonts", "gpui"]
 categories = ["gui"]
 

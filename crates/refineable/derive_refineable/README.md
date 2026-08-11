@@ -1,8 +1,8 @@
 # guic-gpui-derive-refineable
 
-The derive macro for `guic-gpui` refinement types.
+Derives partial refinement types and their merging logic for
+`guic-gpui-refineable`.
 
-This crate is part of `guic-gpui`, a project that started as a fork of Zed's
-GPUI. It is maintained independently and is not endorsed by Zed Industries.
+This project started as a fork of Zed's GPUI.
 
 Licensed under Apache-2.0.
