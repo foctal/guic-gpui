@@ -1,5 +1,8 @@
 # guic-gpui
 
+[![Crates.io](https://img.shields.io/crates/v/guic-gpui.svg)](https://crates.io/crates/guic-gpui)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/foctal/guic-gpui/blob/main/LICENSE)
+
 `guic-gpui` is a GPU-accelerated application framework maintained for GUIC and
 general use. This project started as a fork of Zed's GPUI. It is not
 an official Zed or GPUI release by Zed Industries.
