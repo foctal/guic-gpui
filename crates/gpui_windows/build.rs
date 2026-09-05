@@ -24,6 +24,8 @@ mod shader_compilation {
         let out_dir = std::env::var("OUT_DIR").unwrap();
 
         println!("cargo:rerun-if-changed={}", shader_path.display());
+        println!("cargo:rerun-if-env-changed=GPUI_FXC_PATH");
+        println!("cargo:rerun-if-env-changed=PATH");
 
         // Check if fxc.exe is available
         let fxc_path = find_fxc_compiler();
@@ -58,6 +60,7 @@ mod shader_compilation {
         {
             let shader_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
                 .join("src/color_text_raster.hlsl");
+            println!("cargo:rerun-if-changed={}", shader_path.display());
             compile_shader_for_module(
                 "emoji_rasterization",
                 &out_dir,
@@ -112,27 +115,21 @@ mod shader_compilation {
     }
 
     /// You can set the `GPUI_FXC_PATH` environment variable to specify the path to the fxc.exe compiler.
-    fn find_fxc_compiler() -> String {
+    fn find_fxc_compiler() -> PathBuf {
         // Check environment variable
-        if let Ok(path) = std::env::var("GPUI_FXC_PATH")
-            && Path::new(&path).exists()
+        if let Some(path) = std::env::var_os("GPUI_FXC_PATH")
+            && Path::new(&path).is_file()
         {
+            return path.into();
+        }
+
+        // Select the first matching executable without parsing command output.
+        if let Ok(path) = which::which("fxc.exe") {
             return path;
         }
 
-        // Try to find in PATH
-        // NOTE: This has to be `where.exe` on Windows, not `where`, it must be ended with `.exe`
-        if let Ok(output) = std::process::Command::new("where.exe")
-            .arg("fxc.exe")
-            .output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout);
-            return path.trim().to_string();
-        }
-
         if let Ok(Some(path)) = find_latest_windows_sdk_binary("fxc.exe") {
-            return path.to_string_lossy().into_owned();
+            return path;
         }
 
         panic!("Failed to find fxc.exe");
@@ -141,7 +138,7 @@ mod shader_compilation {
     fn compile_shader_for_module(
         module: &str,
         out_dir: &str,
-        fxc_path: &str,
+        fxc_path: &Path,
         shader_path: &str,
         rust_binding_path: &str,
     ) {
@@ -173,7 +170,7 @@ mod shader_compilation {
     }
 
     fn compile_shader_impl(
-        fxc_path: &str,
+        fxc_path: &Path,
         entry_point: &str,
         output_path: &str,
         var_name: &str,

@@ -40,7 +40,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["The guic-gpui contributors", "The Zed contributors"]
@@ -53,25 +53,25 @@ publish = ["crates-io"]
 
 [workspace.dependencies]
 # Workspace packages use aliases that match the familiar GPUI crate names.
-collections = { package = "guic-gpui-collections", path = "crates/collections", version = "0.2.0" }
-derive_refineable = { package = "guic-gpui-derive-refineable", path = "crates/refineable/derive_refineable", version = "0.2.0" }
-gpui = { package = "guic-gpui", path = "crates/gpui", version = "0.2.0", default-features = false }
-gpui_assets = { package = "guic-gpui-assets", path = "crates/assets", version = "0.2.0" }
-gpui_linux = { package = "guic-gpui-linux", path = "crates/gpui_linux", version = "0.2.0", default-features = false }
-gpui_macos = { package = "guic-gpui-macos", path = "crates/gpui_macos", version = "0.2.0", default-features = false }
-gpui_macros = { package = "guic-gpui-macros", path = "crates/gpui_macros", version = "0.2.0" }
-gpui_platform = { package = "guic-gpui-platform", path = "crates/gpui_platform", version = "0.2.0", default-features = false }
-gpui_shared_string = { package = "guic-gpui-shared-string", path = "crates/gpui_shared_string", version = "0.2.0" }
-gpui_tokio = { package = "guic-gpui-tokio", path = "crates/gpui_tokio", version = "0.2.0" }
-gpui_util = { package = "guic-gpui-util", path = "crates/gpui_util", version = "0.2.0" }
-gpui_web = { package = "guic-gpui-web", path = "crates/gpui_web", version = "0.2.0", default-features = false }
-gpui_wgpu = { package = "guic-gpui-wgpu", path = "crates/gpui_wgpu", version = "0.2.0" }
-gpui_windows = { package = "guic-gpui-windows", path = "crates/gpui_windows", version = "0.2.0", default-features = false }
-http_client = { package = "guic-gpui-http-client", path = "crates/http_client", version = "0.2.0" }
-media = { package = "guic-gpui-media", path = "crates/media", version = "0.2.0" }
-refineable = { package = "guic-gpui-refineable", path = "crates/refineable", version = "0.2.0" }
-scheduler = { package = "guic-gpui-scheduler", path = "crates/scheduler", version = "0.2.0" }
-sum_tree = { package = "guic-gpui-sum-tree", path = "crates/sum_tree", version = "0.2.0" }
+collections = { package = "guic-gpui-collections", path = "crates/collections", version = "0.3.0" }
+derive_refineable = { package = "guic-gpui-derive-refineable", path = "crates/refineable/derive_refineable", version = "0.3.0" }
+gpui = { package = "guic-gpui", path = "crates/gpui", version = "0.3.0", default-features = false }
+gpui_assets = { package = "guic-gpui-assets", path = "crates/assets", version = "0.3.0" }
+gpui_linux = { package = "guic-gpui-linux", path = "crates/gpui_linux", version = "0.3.0", default-features = false }
+gpui_macos = { package = "guic-gpui-macos", path = "crates/gpui_macos", version = "0.3.0", default-features = false }
+gpui_macros = { package = "guic-gpui-macros", path = "crates/gpui_macros", version = "0.3.0" }
+gpui_platform = { package = "guic-gpui-platform", path = "crates/gpui_platform", version = "0.3.0", default-features = false }
+gpui_shared_string = { package = "guic-gpui-shared-string", path = "crates/gpui_shared_string", version = "0.3.0" }
+gpui_tokio = { package = "guic-gpui-tokio", path = "crates/gpui_tokio", version = "0.3.0" }
+gpui_util = { package = "guic-gpui-util", path = "crates/gpui_util", version = "0.3.0" }
+gpui_web = { package = "guic-gpui-web", path = "crates/gpui_web", version = "0.3.0", default-features = false }
+gpui_wgpu = { package = "guic-gpui-wgpu", path = "crates/gpui_wgpu", version = "0.3.0" }
+gpui_windows = { package = "guic-gpui-windows", path = "crates/gpui_windows", version = "0.3.0", default-features = false }
+http_client = { package = "guic-gpui-http-client", path = "crates/http_client", version = "0.3.0" }
+media = { package = "guic-gpui-media", path = "crates/media", version = "0.3.0" }
+refineable = { package = "guic-gpui-refineable", path = "crates/refineable", version = "0.3.0" }
+scheduler = { package = "guic-gpui-scheduler", path = "crates/scheduler", version = "0.3.0" }
+sum_tree = { package = "guic-gpui-sum-tree", path = "crates/sum_tree", version = "0.3.0" }
 
 # Registry dependencies.
 accesskit = { version = "0.24.0", features = ["enumn"] }

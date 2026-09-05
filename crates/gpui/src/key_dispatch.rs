@@ -1038,6 +1038,25 @@ mod tests {
 
     #[crate::test]
     fn test_input_handler_pending(cx: &mut TestAppContext) {
+        struct ErrorLogger;
+        thread_local! { static ERRORS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }
+        impl log::Log for ErrorLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.level() == log::Level::Error {
+                    ERRORS.with_borrow_mut(|errors| errors.push(record.args().to_string()));
+                }
+            }
+            fn flush(&self) {}
+        }
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            log::set_logger(&ErrorLogger).unwrap();
+            log::set_max_level(log::LevelFilter::Trace);
+        });
+        ERRORS.with_borrow_mut(Vec::clear);
         #[derive(Clone)]
         struct CustomElement {
             focus_handle: FocusHandle,
@@ -1253,6 +1272,68 @@ mod tests {
         });
 
         cx.simulate_keystrokes("ctrl-b [");
-        test.update(cx, |test, _| assert_eq!(test.text.borrow().as_str(), "["))
+        test.update(cx, |test, _| assert_eq!(test.text.borrow().as_str(), "["));
+
+        // A live timer dispatches the shorter binding exactly once.
+        cx.simulate_keystrokes("ctrl-b");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), 3));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), 3));
+
+        // Focus changes and explicit clearing cancel replay.
+        cx.simulate_keystrokes("ctrl-b");
+        cx.update(|window, _| window.blur());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), 3));
+        cx.update(|window, cx| window.focus(&focus_handle, cx));
+        cx.simulate_keystrokes("ctrl-b");
+        cx.update(|window, _| window.clear_pending_keystrokes());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), 3));
+
+        // Replacing a sequence gives the new sequence its own full timeout.
+        cx.simulate_keystrokes("ctrl-b");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("ctrl-b");
+        let count = test.update(cx, |test, _| test.action_count.get());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), count));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        test.update(cx, |test, _| assert_eq!(test.action_count.get(), count + 1));
+
+        // Closing a window drops the actual pending timer. A saved async context
+        // also treats an update after destruction as cancellation.
+        cx.simulate_keystrokes("ctrl-b");
+        let mut async_cx = cx.update(|window, app| window.to_async(app));
+        cx.update(|window, _| window.remove_window());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(
+            async_cx
+                .update_if_present(|_, _| panic!("closed window updated"))
+                .unwrap(),
+            None
+        );
+        test.update(cx, |test, _| {
+            assert_eq!(test.action_count.get(), count + 1);
+            assert_eq!(test.text.borrow().as_str(), "[");
+        });
+        ERRORS.with_borrow(|errors| assert!(errors.is_empty(), "{errors:?}"));
     }
 }

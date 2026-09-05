@@ -1149,7 +1149,7 @@ pub struct Window {
 #[derive(Clone, Debug, Default)]
 struct ModifierState {
     modifiers: Modifiers,
-    saw_keystroke: bool,
+    saw_other_input: bool,
 }
 
 /// Tracks input event timestamps to determine if input is arriving at a high rate.
@@ -1294,6 +1294,7 @@ struct PendingInput {
     focus: Option<FocusId>,
     timer: Option<Task<()>>,
     needs_timeout: bool,
+    generation: Rc<()>,
 }
 
 pub(crate) struct ElementStateBox {
@@ -2023,6 +2024,7 @@ impl Window {
 
     /// Close this window.
     pub fn remove_window(&mut self) {
+        self.clear_pending_keystrokes();
         self.removed = true;
     }
 
@@ -5147,7 +5149,7 @@ impl Window {
         if let Some(event) = event.downcast_ref::<ModifiersChangedEvent>() {
             if event.modifiers.number_of_modifiers() == 0
                 && self.pending_modifier.modifiers.number_of_modifiers() == 1
-                && !self.pending_modifier.saw_keystroke
+                && !self.pending_modifier.saw_other_input
             {
                 let key = match self.pending_modifier.modifiers {
                     modifiers if modifiers.shift => Some("shift"),
@@ -5169,11 +5171,13 @@ impl Window {
             if self.pending_modifier.modifiers.number_of_modifiers() == 0
                 && event.modifiers.number_of_modifiers() == 1
             {
-                self.pending_modifier.saw_keystroke = false
+                self.pending_modifier.saw_other_input = false
+            } else if event.modifiers.number_of_modifiers() > 1 {
+                self.pending_modifier.saw_other_input = true
             }
             self.pending_modifier.modifiers = event.modifiers
         } else if let Some(key_down_event) = event.downcast_ref::<KeyDownEvent>() {
-            self.pending_modifier.saw_keystroke = true;
+            self.pending_modifier.saw_other_input = true;
             keystroke = Some(key_down_event.keystroke.clone());
             if key_down_event.keystroke.key_char.is_some()
                 && matches!(
@@ -5232,9 +5236,18 @@ impl Window {
                 match_result.pending_has_binding || text_input_requires_timeout;
 
             if currently_pending.needs_timeout {
+                let generation = Rc::new(());
+                currently_pending.generation = generation.clone();
                 currently_pending.timer = Some(self.spawn(cx, async move |cx| {
                     cx.background_executor.timer(Duration::from_secs(1)).await;
-                    cx.update(move |window, cx| {
+                    cx.update_if_present(move |window, cx| {
+                        if !window
+                            .pending_input
+                            .as_ref()
+                            .is_some_and(|pending| Rc::ptr_eq(&pending.generation, &generation))
+                        {
+                            return;
+                        }
                         let Some(currently_pending) = window
                             .pending_input
                             .take()
@@ -6781,6 +6794,143 @@ mod tests {
         }
     }
 
+    crate::actions!(pending_timeout_regression, [TimeoutAction]);
+
+    struct PendingView {
+        focus: FocusHandle,
+        dispatched: Rc<Cell<usize>>,
+    }
+
+    impl Render for PendingView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let dispatched = self.dispatched.clone();
+            div()
+                .track_focus(&self.focus)
+                .on_action(move |_: &TimeoutAction, _, _| {
+                    dispatched.set(dispatched.get() + 1);
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn stale_pending_timeout_does_not_consume_replacement(cx: &mut TestAppContext) {
+        use crate::{KeyBinding, KeyDownEvent, Keystroke, PlatformInput};
+        use std::time::Duration;
+        let dispatched = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("ctrl-k", TimeoutAction, None),
+                KeyBinding::new("ctrl-k ctrl-c", TimeoutAction, None),
+            ])
+        });
+        let window = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            PendingView {
+                focus,
+                dispatched: dispatched.clone(),
+            }
+        });
+        let send_prefix = |window: &mut Window, cx: &mut crate::App| {
+            window.dispatch_event(
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke: Keystroke::parse("ctrl-k").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        };
+        let _stale = cx
+            .update_window(window.into(), |_, window, cx| {
+                send_prefix(window, cx);
+                // Retain the actual production task beyond sequence replacement to
+                // exercise the generation guard independently of task cancellation.
+                window.pending_input.as_mut().unwrap().timer.take().unwrap()
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.update_window(window.into(), |_, window, cx| send_prefix(window, cx))
+            .unwrap();
+        assert_eq!(dispatched.get(), 1);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, _| assert!(window.has_pending_keystrokes()))
+            .unwrap();
+        assert_eq!(dispatched.get(), 1);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_eq!(dispatched.get(), 2);
+    }
+
+    #[gpui::test]
+    fn resumed_timeout_cannot_update_replacement_window(cx: &mut TestAppContext) {
+        use futures::channel::oneshot;
+        use std::time::Duration;
+
+        let old = cx.add_window(|_, _| EmptyView);
+        let (resume, resumed) = oneshot::channel();
+        let timer_ready = Rc::new(Cell::new(false));
+        let completed = Rc::new(Cell::new(false));
+        let _task = old
+            .update(cx, |_, window, app| {
+                let timer_ready = timer_ready.clone();
+                let completed = completed.clone();
+                window.spawn(app, async move |cx| {
+                    cx.background_executor.timer(Duration::from_secs(1)).await;
+                    timer_ready.set(true);
+                    // Hold a resumed task at the lifecycle boundary. Production has
+                    // no await here, but cancellation must also tolerate late work.
+                    resumed.await.unwrap();
+                    assert_eq!(
+                        cx.update_if_present(|_, _| panic!("stale work ran"))
+                            .unwrap(),
+                        None
+                    );
+                    completed.set(true);
+                })
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(timer_ready.get());
+        old.update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        let replacement = cx.add_window(|_, _| EmptyView);
+        assert_ne!(old.window_id(), replacement.window_id());
+        resume.send(()).unwrap();
+        cx.run_until_parked();
+        assert!(completed.get());
+        replacement
+            .update(cx, |_, window, _| assert!(!window.has_pending_keystrokes()))
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn optional_window_update_preserves_unrelated_errors(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| EmptyView);
+        let mut context = window
+            .update(cx, |_, window, app| window.to_async(app))
+            .unwrap();
+        assert_eq!(context.update_if_present(|_, _| 42).unwrap(), Some(42));
+        // Callback errors stay nested values, just as with the original update API.
+        assert!(
+            context
+                .update_if_present(|_, _| Err::<(), _>(anyhow::anyhow!("callback failure")))
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        cx.update(|_| {
+            assert!(context.update_if_present(|_, _| ()).is_err());
+        });
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        assert_eq!(context.update_if_present(|_, _| ()).unwrap(), None);
+    }
+
     struct OpensWindowOnPaint {
         opened: Rc<Cell<bool>>,
     }
@@ -7284,5 +7434,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(b_focus_count.get(), 1);
+    }
+
+    #[gpui::test]
+    fn test_window_reports_no_raw_handle_instead_of_panicking(cx: &mut TestAppContext) {
+        use raw_window_handle::{HandleError, HasDisplayHandle as _, HasWindowHandle as _};
+
+        let window = cx.add_window(|_, _| EmptyView);
+        window
+            .update(cx, |_, window, _| {
+                assert!(matches!(
+                    window.window_handle(),
+                    Err(HandleError::NotSupported)
+                ));
+                assert!(matches!(
+                    window.display_handle(),
+                    Err(HandleError::NotSupported)
+                ));
+            })
+            .unwrap();
     }
 }

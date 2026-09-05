@@ -83,7 +83,8 @@ use crate::linux::{
     DOUBLE_CLICK_INTERVAL, LinuxClient, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT,
     SCROLL_LINES, capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state,
     is_within_click_distance, keystroke_from_xkb, keystroke_underlying_dead_key,
-    modifiers_from_xkb, open_uri_internal, read_fd_with_timeout, reveal_path_internal,
+    modifiers_from_xkb, new_xkb_context, open_uri_internal, read_fd_with_timeout,
+    reveal_path_internal,
     wayland::{
         clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
         cursor::Cursor,
@@ -1708,7 +1709,13 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                     log::error!("Received keymap format {:?}, expected XkbV1", format);
                     return;
                 }
-                let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                let xkb_context = match new_xkb_context() {
+                    Ok(context) => context,
+                    Err(error) => {
+                        log::error!("Failed to process Wayland keymap: {error:#}");
+                        return;
+                    }
+                };
                 let keymap = unsafe {
                     xkb::Keymap::new_from_fd(
                         &xkb_context,
@@ -2840,6 +2847,60 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn wayland_errors_use_logger_when_stderr_is_unwritable() {
+        const CHILD_ENV: &str = "GUIC_WAYLAND_ERROR_LOG_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Isolate both the process-global logger and the unusable stderr.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::wayland::client::tests::wayland_errors_use_logger_when_stderr_is_unwritable",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env_remove("WAYLAND_DEBUG")
+                .stderr(std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Wayland error reporting failed with unwritable stderr: {}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct ErrorLogger(AtomicUsize);
+        impl log::Log for ErrorLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.level() == log::Level::Error
+                    && record.target().starts_with("wayland_backend")
+                {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: ErrorLogger = ErrorLogger(AtomicUsize::new(0));
+        log::set_logger(&LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Error);
+
+        // A private socket pair reproduces connection failure without touching
+        // the desktop compositor or needing a Wayland session.
+        let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let backend = wayland_backend::client::Backend::connect(client).unwrap();
+        drop(server);
+        assert!(backend.prepare_read().unwrap().read().is_err());
+        assert!(LOGGER.0.load(Ordering::SeqCst) > 0);
+    }
 
     #[derive(Default)]
     struct FakeImeCursorRectangleSink {

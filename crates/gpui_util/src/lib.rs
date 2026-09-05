@@ -287,31 +287,88 @@ where
     }
 }
 
+/// Infer module metadata only from recognized source layouts. Other paths use
+/// their filename stem as a target, without claiming to know the caller's module.
+fn caller_log_metadata(file: &str) -> (String, Option<String>) {
+    let normalized = file.replace('\\', "/");
+    let parts: Vec<_> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let source = parts
+        .windows(3)
+        .enumerate()
+        .find_map(|(i, segment)| {
+            if matches!(segment[0], "crates" | "vendor") && segment[2] == "src" {
+                Some((segment[1], i + 3))
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            parts.windows(5).enumerate().find_map(|(i, segment)| {
+                if segment[0] != "registry" || segment[1] != "src" || segment[4] != "src" {
+                    return None;
+                }
+                let package = segment[3];
+                package.match_indices('-').find_map(|(separator, _)| {
+                    let (name, version) = (&package[..separator], &package[separator + 1..]);
+                    let core = version.split(['-', '+']).next()?;
+                    let numbers: Vec<_> = core.split('.').collect();
+                    if name.is_empty()
+                        || numbers.len() != 3
+                        || !numbers
+                            .iter()
+                            .all(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                    {
+                        return None;
+                    }
+                    Some((name, i + 5))
+                })
+            })
+        });
+    if let Some((krate, start)) = source {
+        let krate = krate.replace('-', "_");
+        let mut modules: Vec<_> = parts[start..]
+            .iter()
+            .map(|s| s.trim_end_matches(".rs"))
+            .collect();
+        if modules
+            .last()
+            .is_some_and(|name| matches!(*name, "lib" | "main" | "mod"))
+        {
+            modules.pop();
+        }
+        if modules.first() == Some(&krate.as_str()) {
+            modules.remove(0);
+        }
+        let mut target = krate;
+        for module in modules {
+            target.push_str("::");
+            target.push_str(module);
+        }
+        if !target.is_empty() {
+            return (target.clone(), Some(target));
+        }
+    }
+    let stem = parts.last().copied().unwrap_or("").trim_end_matches(".rs");
+    let target = if stem.chars().any(|c| c.is_alphanumeric()) {
+        stem
+    } else {
+        "guic_gpui_util"
+    };
+    (target.to_owned(), None)
+}
+
 fn log_error_with_caller<E>(caller: core::panic::Location<'_>, error: E, level: log::Level)
 where
     E: std::fmt::Display,
 {
-    #[cfg(not(windows))]
-    let file = caller.file();
-    #[cfg(windows)]
-    let file = caller.file().replace('\\', "/");
-    // In this codebase all crates reside in a `crates` directory,
-    // so discard the prefix up to that segment to find the crate name
-    let file = file.split_once("crates/");
-    let target = file.as_ref().and_then(|(_, s)| s.split_once("/src/"));
-
-    let module_path = target.map(|(krate, module)| {
-        if module.starts_with(krate) {
-            module.trim_end_matches(".rs").replace('/', "::")
-        } else {
-            krate.to_owned() + "::" + &module.trim_end_matches(".rs").replace('/', "::")
-        }
-    });
-    let file = file.map(|(_, file)| format!("crates/{file}"));
+    let (target, module_path) = caller_log_metadata(caller.file());
     log::logger().log(
         &log::Record::builder()
-            .target(module_path.as_deref().unwrap_or(""))
-            .module_path(file.as_deref())
+            .target(&target)
+            .module_path(module_path.as_deref())
             .args(format_args!("{:#}", error))
             .file(Some(caller.file()))
             .line(Some(caller.line()))
@@ -320,6 +377,7 @@ where
     );
 }
 
+#[track_caller]
 pub fn log_err<E: std::fmt::Display>(error: &E) {
     log_error_with_caller(*Location::caller(), error, log::Level::Error);
 }
@@ -599,4 +657,129 @@ where
     items.select_nth_unstable_by(limit, compare);
     items.truncate(limit);
     items.sort_by(compare);
+}
+
+#[cfg(test)]
+mod caller_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_portable_caller_paths() {
+        for (path, target, module) in [
+            (
+                "/repo/crates/gpui/src/window.rs",
+                "gpui::window",
+                Some("gpui::window"),
+            ),
+            ("/repo/crates/gpui/src/lib.rs", "gpui", Some("gpui")),
+            ("/repo/crates/gpui/src/main.rs", "gpui", Some("gpui")),
+            (
+                "/repo/crates/gpui/src/input/mod.rs",
+                "gpui::input",
+                Some("gpui::input"),
+            ),
+            ("/repo/crates/gpui/src/gpui.rs", "gpui", Some("gpui")),
+            (
+                "/cargo/registry/src/index/guic-gpui-0.2.0/src/window.rs",
+                "guic_gpui::window",
+                Some("guic_gpui::window"),
+            ),
+            (
+                "/repo/vendor/guic-gpui/src/window.rs",
+                "guic_gpui::window",
+                Some("guic_gpui::window"),
+            ),
+            (
+                "/cargo/registry/src/index/guic-gpui-0.2.0-beta.1/src/main.rs",
+                "guic_gpui",
+                Some("guic_gpui"),
+            ),
+            (
+                "/cargo/registry/src/index/guic-gpui-2/src/window.rs",
+                "window",
+                None,
+            ),
+            ("/repo/src/window.rs", "window", None),
+            (
+                r"C:\repo\crates\gpui\src\window.rs",
+                "gpui::window",
+                Some("gpui::window"),
+            ),
+            ("/source/window.rs", "window", None),
+            ("window.rs", "window", None),
+            ("/repo/notcrates/gpui/src/window.rs", "window", None),
+            ("", "guic_gpui_util", None),
+            ("/", "guic_gpui_util", None),
+            ("..", "guic_gpui_util", None),
+        ] {
+            let actual = caller_log_metadata(path);
+            assert_eq!(
+                actual,
+                (target.to_owned(), module.map(str::to_owned)),
+                "{path}"
+            );
+            assert!(!actual.0.is_empty());
+        }
+    }
+
+    #[test]
+    fn emitted_errors_preserve_caller_metadata() {
+        struct Logger;
+        #[derive(Debug)]
+        struct Record {
+            target: String,
+            module: Option<String>,
+            level: log::Level,
+            message: String,
+            file: String,
+            line: u32,
+        }
+        thread_local! { static RECORDS: std::cell::RefCell<Vec<Record>> = const { std::cell::RefCell::new(Vec::new()) }; }
+        impl log::Log for Logger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                RECORDS.with_borrow_mut(|records| {
+                    records.push(Record {
+                        target: record.target().to_owned(),
+                        module: record.module_path().map(str::to_owned),
+                        level: record.level(),
+                        message: record.args().to_string(),
+                        file: record.file().unwrap().to_owned(),
+                        line: record.line().unwrap(),
+                    })
+                });
+            }
+            fn flush(&self) {}
+        }
+        // This is the only logger installation in this test binary. Captures are thread-local.
+        log::set_logger(&Logger).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+        let free_line = line!() + 1;
+        log_err(&"free error");
+        let result_line = line!() + 1;
+        let _: Option<()> = Err("result error").log_err();
+        let future_line = line!() + 1;
+        let mut future = std::pin::pin!(std::future::ready(Err::<(), _>("future error")).log_err());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(future.as_mut(), &mut context).is_ready());
+        RECORDS.with_borrow(|records| {
+            assert_eq!(records.len(), 3);
+            for (record, line, message) in [
+                (&records[0], free_line, "free error"),
+                (&records[1], result_line, "result error"),
+                (&records[2], future_line, "future error"),
+            ] {
+                assert_eq!(
+                    (record.target.clone(), record.module.clone()),
+                    caller_log_metadata(file!())
+                );
+                assert_eq!(record.level, log::Level::Error);
+                assert_eq!(record.message, message);
+                assert_eq!(record.file, file!());
+                assert_eq!(record.line, line);
+            }
+        });
+    }
 }

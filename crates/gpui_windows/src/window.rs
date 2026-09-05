@@ -552,13 +552,8 @@ impl WindowsWindow {
         set_non_rude_hwnd(hwnd, true);
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.border_offset.update(hwnd)?;
-        let placement = retrieve_window_placement(
-            hwnd,
-            display,
-            params.bounds,
-            this.state.scale_factor.get(),
-            &this.state.border_offset,
-        )?;
+        let placement =
+            retrieve_window_placement(hwnd, display, params.bounds, &this.state.border_offset)?;
         if params.show {
             let mut placement = placement;
             if !params.focus {
@@ -1520,7 +1515,6 @@ fn retrieve_window_placement(
     hwnd: HWND,
     display: WindowsDisplay,
     initial_bounds: Bounds<Pixels>,
-    scale_factor: f32,
     border_offset: &WindowBorderOffset,
 ) -> Result<WINDOWPLACEMENT> {
     let mut placement = WINDOWPLACEMENT {
@@ -1534,7 +1528,14 @@ fn retrieve_window_placement(
     } else {
         display.default_bounds()
     };
-    let bounds = bounds.to_device_pixels(scale_factor);
+    // `bounds` is expressed in logical pixels for `display`, so it must be converted
+    // to device pixels using that display's own scale factor. The window's current
+    // scale factor can't be used here: `CreateWindowExW` was called with
+    // `CW_USEDEFAULT`, so at this point the window may still be sitting on whichever
+    // monitor Windows picked by default, which can have a different DPI than `display`
+    // and would otherwise throw off the physical position (e.g. leaving the window
+    // partially off-screen when moved to a monitor with a different scale factor).
+    let bounds = bounds.to_device_pixels(display.scale_factor());
     placement.rcNormalPosition = calculate_window_rect(bounds, border_offset);
     Ok(placement)
 }
@@ -1626,6 +1627,91 @@ mod tests {
     use super::ClickState;
     use gpui::{DevicePixels, MouseButton, point};
     use std::time::Duration;
+
+    #[test]
+    fn initial_placement_uses_destination_dpi() -> anyhow::Result<()> {
+        use super::{WindowBorderOffset, retrieve_window_placement};
+        use crate::display::WindowsDisplay;
+        use gpui::{Bounds, PlatformDisplay, px, size};
+        use windows::Win32::{
+            Foundation::HWND,
+            UI::{HiDpi::*, WindowsAndMessaging::*},
+        };
+
+        struct DpiContext(DPI_AWARENESS_CONTEXT);
+        impl Drop for DpiContext {
+            fn drop(&mut self) {
+                unsafe {
+                    SetThreadDpiAwarenessContext(self.0);
+                }
+            }
+        }
+        struct HiddenWindow(HWND);
+        impl Drop for HiddenWindow {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0).expect("destroy test window");
+                }
+            }
+        }
+
+        // A DPI-unaware window supplies a real 96-DPI source HWND even on a
+        // single scaled monitor. Restore the caller's thread context on exit.
+        let original = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
+        assert!(!original.0.is_null());
+        let _context = DpiContext(original);
+        let window = HiddenWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                windows::core::w!("STATIC"),
+                windows::core::w!("GPUI placement regression"),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )?
+        });
+        unsafe {
+            SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+        let display = WindowsDisplay::primary_monitor().expect("primary monitor");
+        let source_dpi = unsafe { GetDpiForWindow(window.0) };
+        assert_eq!(source_dpi, 96);
+        eprintln!(
+            "source DPI: {source_dpi}; destination scale: {}",
+            display.scale_factor()
+        );
+
+        let visible = display.visible_bounds();
+        let saved = Bounds::new(
+            visible.origin + point(px(40.0), px(50.0)),
+            size(px(320.0), px(240.0)),
+        );
+        let outside = Bounds::new(point(px(-100000.0), px(-100000.0)), saved.size);
+        assert!(display.check_given_bounds(saved));
+        assert!(!display.check_given_bounds(outside));
+        for (requested, expected) in [(saved, saved), (outside, display.default_bounds())] {
+            for (width, height) in [(0, 0), (17, 19)] {
+                let border = WindowBorderOffset {
+                    width_offset: width.into(),
+                    height_offset: height.into(),
+                };
+                let placement = retrieve_window_placement(window.0, display, requested, &border)?;
+                let physical = expected.to_device_pixels(display.scale_factor());
+                let rect = placement.rcNormalPosition;
+                assert_eq!(rect.left, physical.left().0 - width / 2);
+                assert_eq!(rect.top, physical.top().0 - height / 2);
+                assert_eq!(rect.right, physical.right().0 + width - width / 2);
+                assert_eq!(rect.bottom, physical.bottom().0 + height - height / 2);
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_double_click_interval() {

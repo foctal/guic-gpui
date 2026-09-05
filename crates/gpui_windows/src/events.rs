@@ -1666,23 +1666,31 @@ fn retrieve_composition_cursor_position(ctx: HIMC) -> usize {
 }
 
 fn should_use_ime_cursor_position(ctx: HIMC, cursor_pos: usize) -> bool {
-    let attrs_size = unsafe { ImmGetCompositionStringW(ctx, GCS_COMPATTR, None, 0) } as usize;
-    if attrs_size == 0 {
+    ime_cursor_is_adjacent_to_input(cursor_pos, |buffer| {
+        let (ptr, len) = match buffer {
+            Some(buffer) => (Some(buffer.as_mut_ptr().cast()), buffer.len() as u32),
+            None => (None, 0),
+        };
+        unsafe { ImmGetCompositionStringW(ctx, GCS_COMPATTR, ptr, len) }
+    })
+}
+
+fn ime_cursor_is_adjacent_to_input(
+    cursor_pos: usize,
+    mut read_attributes: impl FnMut(Option<&mut [u8]>) -> i32,
+) -> bool {
+    let attrs_size = read_attributes(None);
+    // IMM_ERROR_NODATA and IMM_ERROR_GENERAL are negative, not buffer sizes.
+    if attrs_size <= 0 {
         return false;
     }
 
-    let mut attrs = vec![0u8; attrs_size];
-    let result = unsafe {
-        ImmGetCompositionStringW(
-            ctx,
-            GCS_COMPATTR,
-            Some(attrs.as_mut_ptr() as *mut _),
-            attrs_size as u32,
-        )
-    };
+    let mut attrs = vec![0u8; attrs_size as usize];
+    let result = read_attributes(Some(&mut attrs));
     if result <= 0 {
         return false;
     }
+    attrs.truncate(result as usize);
 
     // Keep the cursor adjacent to the inserted text by only using the suggested position
     // if it's adjacent to unconverted text.
@@ -1692,6 +1700,50 @@ fn should_use_ime_cursor_position(ctx: HIMC, cursor_pos: usize) -> bool {
         && attrs[cursor_pos - 1] == (ATTR_INPUT as u8);
 
     at_cursor_is_input || before_cursor_is_input
+}
+
+#[cfg(test)]
+mod ime_tests {
+    use super::ime_cursor_is_adjacent_to_input;
+
+    #[test]
+    fn missing_or_failed_attributes_do_not_request_a_buffer() {
+        for result in [-1, -2, 0] {
+            assert!(!ime_cursor_is_adjacent_to_input(0, |buffer| {
+                assert!(buffer.is_none());
+                result
+            }));
+        }
+    }
+
+    #[test]
+    fn attribute_read_errors_use_the_fallback_cursor() {
+        for result in [-1, -2, 0] {
+            assert!(!ime_cursor_is_adjacent_to_input(0, |buffer| {
+                if buffer.is_none() { 2 } else { result }
+            }));
+        }
+    }
+
+    #[test]
+    fn only_returned_attributes_determine_cursor_adjacency() {
+        let check = |cursor_pos| {
+            ime_cursor_is_adjacent_to_input(cursor_pos, |buffer| {
+                if let Some(buffer) = buffer {
+                    // ATTR_INPUT followed by ATTR_CONVERTED; the last byte is unread.
+                    buffer[..2].copy_from_slice(&[0, 2]);
+                    2
+                } else {
+                    3
+                }
+            })
+        };
+        assert!(check(0));
+        assert!(check(1));
+        assert!(!check(2));
+        assert!(!check(3));
+        assert!(!check(usize::MAX));
+    }
 }
 
 #[inline]
