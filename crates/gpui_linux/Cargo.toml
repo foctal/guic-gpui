@@ -41,6 +41,7 @@ wayland = [
     "gpui/wayland",
 ]
 x11 = [
+    "gpui/x11",
     "gpui_wgpu",
     "ashpd",
 
@@ -101,6 +102,7 @@ calloop-wayland-source = { version = "0.4.1", optional = true }
 wayland-backend = { version = "0.3.15", features = [
     "client_system",
     "dlopen",
+    "log",
 ], optional = true }
 wayland-client = { version = "0.31.11", optional = true }
 wayland-cursor = { version = "0.31.11", optional = true }
