@@ -285,8 +285,10 @@ fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
         } else {
             colors_used
         }) * 4
-    } else if compression == 3 {
-        12 // BI_BITFIELDS
+    } else if compression == 3 && header_size == 40 {
+        // Only BITMAPINFOHEADER stores BI_BITFIELDS masks after the header.
+        // Extended headers already include the masks in their declared size.
+        12
     } else {
         0
     };
@@ -384,5 +386,36 @@ impl LockedGlobal {
 impl Drop for LockedGlobal {
     fn drop(&mut self) {
         unsafe { GlobalUnlock(self.global).ok() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::convert_dib_to_bmp;
+
+    #[test]
+    fn bitfields_dib_decodes_with_info_v4_and_v5_headers() {
+        for header_size in [40u32, 108, 124] {
+            let pixel_offset = if header_size == 40 { 52 } else { header_size } as usize;
+            let mut dib = vec![0u8; pixel_offset + 4];
+            dib[0..4].copy_from_slice(&header_size.to_le_bytes());
+            dib[4..8].copy_from_slice(&1i32.to_le_bytes());
+            dib[8..12].copy_from_slice(&1i32.to_le_bytes());
+            dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+            dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+            dib[16..20].copy_from_slice(&3u32.to_le_bytes()); // BI_BITFIELDS
+            dib[20..24].copy_from_slice(&4u32.to_le_bytes());
+            dib[40..44].copy_from_slice(&0x00ff0000u32.to_le_bytes());
+            dib[44..48].copy_from_slice(&0x0000ff00u32.to_le_bytes());
+            dib[48..52].copy_from_slice(&0x000000ffu32.to_le_bytes());
+            dib[pixel_offset..].copy_from_slice(&[0x33, 0x66, 0xcc, 0]);
+
+            let bmp = convert_dib_to_bmp(&dib).unwrap();
+            let decoded = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
+                .unwrap_or_else(|error| panic!("Header size {header_size}: {error}"))
+                .to_rgb8();
+            assert_eq!(decoded.dimensions(), (1, 1));
+            assert_eq!(decoded.get_pixel(0, 0).0, [0xcc, 0x66, 0x33]);
+        }
     }
 }
