@@ -2185,7 +2185,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
 name = "guic-gpui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2274,14 +2274,14 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-assets"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ttf-parser",
 ]
 
 [[package]]
 name = "guic-gpui-collections"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "guic-gpui-util",
  "indexmap",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-compat"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-derive-refineable"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-examples"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "guic-gpui",
  "guic-gpui-macros",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-http-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-linux"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-macos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-macros"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-media"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console_error_panic_hook",
  "guic-gpui",
@@ -2475,14 +2475,14 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-refineable"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "guic-gpui-derive-refineable",
 ]
 
 [[package]]
 name = "guic-gpui-scheduler"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-task",
  "backtrace",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-shared-string"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "schemars",
  "serde",
@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-sum-tree"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "heapless",
  "log",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-tokio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "guic-gpui",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-util"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "log",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-wgpu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "guic-gpui-windows"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "accesskit_windows",
