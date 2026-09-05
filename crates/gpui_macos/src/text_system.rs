@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use cocoa::appkit::CGFloat;
-use collections::{HashMap, HashSet};
+use collections::HashMap;
 use core_foundation::{
     array::{CFArray, CFArrayRef},
     attributed_string::CFMutableAttributedString,
@@ -71,6 +71,117 @@ struct MacTextSystemState {
     font_ids_by_postscript_name: HashMap<String, FontId>,
     font_ids_by_font_key: HashMap<FontKey, SmallVec<[FontId; 4]>>,
     postscript_names_by_font_id: HashMap<FontId, String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum DuplicateFont {
+    First,
+    Equivalent,
+    Conflict,
+}
+
+// Keep every distinct identity so each conflict is reported only once per load.
+fn classify_duplicate<T>(
+    seen: &mut Vec<T>,
+    font: T,
+    equivalent: impl Fn(&T, &T) -> bool,
+) -> DuplicateFont {
+    if seen.iter().any(|previous| equivalent(previous, &font)) {
+        return DuplicateFont::Equivalent;
+    }
+    let result = if seen.is_empty() {
+        DuplicateFont::First
+    } else {
+        DuplicateFont::Conflict
+    };
+    seen.push(font);
+    result
+}
+
+fn equivalent_native_fonts(first: &CTFont, second: &CTFont) -> bool {
+    use foreign_types::ForeignType;
+    let first_graphics = first.copy_to_CGFont();
+    let second_graphics = second.copy_to_CGFont();
+    let same_graphics = unsafe {
+        core_foundation::base::CFEqual(
+            first_graphics.as_ptr().cast(),
+            second_graphics.as_ptr().cast(),
+        ) != 0
+    };
+    let matrix = |font: &CTFont| {
+        let m = font.get_matrix();
+        [m.a, m.b, m.c, m.d, m.tx, m.ty]
+    };
+    same_graphics
+        && first_graphics.copy_variations() == second_graphics.copy_variations()
+        && first.pt_size() == second.pt_size()
+        && matrix(first) == matrix(second)
+        && effective_font_attributes(first) == effective_font_attributes(second)
+}
+
+// System UI usage is a selection hint: Bold and Emphasized can resolve to the
+// same native face. Replace requested traits with the resolved traits and remove
+// only that hint. All other attributes (including variations, feature settings,
+// cascades, and unknown attributes) remain significant. The caller also compares
+// the CGFont identity, point size, and transform, never just the PostScript name.
+fn effective_font_attributes(
+    font: &CTFont,
+) -> core_foundation::dictionary::CFDictionary<CFString, CFType> {
+    use core_foundation::dictionary::CFDictionary;
+    let attributes = font.copy_descriptor().attributes();
+    let (keys, values) = attributes.get_keys_and_values();
+    let mut pairs: Vec<_> = keys
+        .into_iter()
+        .zip(values)
+        .map(|(key, value)| unsafe {
+            (
+                CFString::wrap_under_get_rule(key.cast()),
+                CFType::wrap_under_get_rule(value),
+            )
+        })
+        .filter(|(key, _)| {
+            !matches!(
+                key.to_string().as_str(),
+                "NSCTFontUIUsageAttribute" | "NSCTFontTraitsAttribute"
+            )
+        })
+        .collect();
+    pairs.push((
+        unsafe {
+            CFString::wrap_under_get_rule(core_text::font_descriptor::kCTFontTraitsAttribute)
+        },
+        font.all_traits().as_CFType(),
+    ));
+    CFDictionary::from_CFType_pairs(&pairs)
+}
+
+#[derive(Debug, PartialEq)]
+enum InvalidFont {
+    Traits,
+    MissingPostscriptName,
+}
+
+fn validated_font_name(
+    name: Option<String>,
+    traits: &core_text::font_descriptor::CTFontTraits,
+) -> std::result::Result<String, InvalidFont> {
+    let required = unsafe {
+        [
+            kCTFontSymbolicTrait,
+            kCTFontWidthTrait,
+            kCTFontWeightTrait,
+            kCTFontSlantTrait,
+        ]
+    };
+    if !required.iter().all(|key| {
+        traits
+            .find(*key)
+            .and_then(|value| value.downcast::<CFNumber>())
+            .is_some()
+    }) {
+        return Err(InvalidFont::Traits);
+    }
+    name.ok_or(InvalidFont::MissingPostscriptName)
 }
 
 impl MacTextSystem {
@@ -282,7 +393,7 @@ impl MacTextSystemState {
         let name = gpui::font_name_with_fallbacks(name, ".AppleSystemUIFont");
 
         let mut font_ids = SmallVec::new();
-        let mut postscript_names_seen = HashSet::default();
+        let mut postscript_names_seen = HashMap::<String, Vec<CTFont>>::default();
         let family = self
             .memory_source
             .select_family_by_name(name)
@@ -322,54 +433,48 @@ impl MacTextSystemState {
             // which unwraps a downcast to CFNumber. This is an attempt to avoid the panic,
             // and to try and identify the incalcitrant font.
             let traits = font.native_font().all_traits();
-            if unsafe {
-                !(traits
-                    .get(kCTFontSymbolicTrait)
-                    .downcast::<CFNumber>()
-                    .is_some()
-                    && traits
-                        .get(kCTFontWidthTrait)
-                        .downcast::<CFNumber>()
-                        .is_some()
-                    && traits
-                        .get(kCTFontWeightTrait)
-                        .downcast::<CFNumber>()
-                        .is_some()
-                    && traits
-                        .get(kCTFontSlantTrait)
-                        .downcast::<CFNumber>()
-                        .is_some())
-            } {
-                log::error!(
-                    "Failed to read traits for font {:?} (PostScript name {:?})",
-                    font.full_name(),
-                    font.postscript_name(),
-                );
-                continue;
-            }
-
-            let Some(postscript_name) = font.postscript_name() else {
-                log::warn!(
-                    "font {:?} in family {:?} has no PostScript name; skipping",
-                    font.full_name(),
-                    name,
-                );
-                continue;
+            let postscript_name = match validated_font_name(font.postscript_name(), &traits) {
+                Ok(name) => name,
+                Err(InvalidFont::Traits) => {
+                    log::error!(
+                        "Failed to read traits for font {:?} (PostScript name {:?})",
+                        font.full_name(),
+                        font.postscript_name(),
+                    );
+                    continue;
+                }
+                Err(InvalidFont::MissingPostscriptName) => {
+                    log::warn!(
+                        "font {:?} in family {:?} has no PostScript name; skipping",
+                        font.full_name(),
+                        name,
+                    );
+                    continue;
+                }
             };
             // Dedup is scoped to this single `load_family` call (issue #55472).
             // The same family can be reloaded later under a different `FontKey`
             // (different features/fallbacks); a global check against
             // `font_ids_by_postscript_name` would skip every already-registered
             // font and leave the second call's `font_ids` empty.
-            if !postscript_names_seen.insert(postscript_name.clone()) {
-                log::warn!(
-                    "skipping duplicate font {:?} with PostScript name {:?} \
-                     in family {:?}",
-                    font.full_name(),
-                    postscript_name,
-                    name,
-                );
-                continue;
+            let native = font.native_font();
+            let seen = postscript_names_seen
+                .entry(postscript_name.clone())
+                .or_default();
+            match classify_duplicate(seen, native, equivalent_native_fonts) {
+                DuplicateFont::Equivalent => continue,
+                DuplicateFont::Conflict => {
+                    log::warn!(
+                        "skipping conflicting font {:?} with PostScript name {:?} in family {:?}; retained descriptor {:?}, conflicting descriptor {:?}",
+                        font.full_name(),
+                        postscript_name,
+                        name,
+                        seen[0].copy_descriptor(),
+                        seen.last().unwrap().copy_descriptor(),
+                    );
+                    continue;
+                }
+                DuplicateFont::First => {}
             }
             let font_id = FontId(self.fonts.len());
             font_ids.push(font_id);
@@ -768,6 +873,181 @@ mod lenient_font_attributes {
 mod tests {
     use crate::MacTextSystem;
     use gpui::{FontRun, GlyphId, PlatformTextSystem, font, px};
+
+    #[test]
+    fn invalid_font_registration_is_independent_of_duplicates() {
+        use super::{InvalidFont, validated_font_name};
+        use core_foundation::{
+            base::TCFType, dictionary::CFDictionary, number::CFNumber, string::CFString,
+        };
+        use core_text::font_descriptor::{
+            kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
+        };
+        let mut pairs: Vec<_> = unsafe {
+            [
+                kCTFontSymbolicTrait,
+                kCTFontWidthTrait,
+                kCTFontWeightTrait,
+                kCTFontSlantTrait,
+            ]
+        }
+        .into_iter()
+        .map(|key| {
+            (
+                unsafe { CFString::wrap_under_get_rule(key) },
+                CFNumber::from(0).as_CFType(),
+            )
+        })
+        .collect();
+        let valid = CFDictionary::from_CFType_pairs(&pairs);
+        assert_eq!(
+            validated_font_name(Some("TestFont".into()), &valid),
+            Ok("TestFont".into())
+        );
+        assert_eq!(
+            validated_font_name(None, &valid),
+            Err(InvalidFont::MissingPostscriptName)
+        );
+        pairs[0].1 = CFString::new("not a number").as_CFType();
+        assert_eq!(
+            validated_font_name(
+                Some("TestFont".into()),
+                &CFDictionary::from_CFType_pairs(&pairs)
+            ),
+            Err(InvalidFont::Traits)
+        );
+        pairs.remove(0);
+        assert_eq!(
+            validated_font_name(None, &CFDictionary::from_CFType_pairs(&pairs)),
+            Err(InvalidFont::Traits)
+        );
+    }
+
+    #[test]
+    fn duplicate_descriptors_preserve_rendering_differences() {
+        use super::{DuplicateFont, classify_duplicate};
+        fn classify_font_descriptor(
+            seen: &mut Vec<core_text::font_descriptor::CTFontDescriptor>,
+            font: core_text::font_descriptor::CTFontDescriptor,
+        ) -> DuplicateFont {
+            classify_duplicate(seen, font, |a, b| a.attributes() == b.attributes())
+        }
+        use core_foundation::{
+            base::TCFType, dictionary::CFDictionary, number::CFNumber, string::CFString,
+        };
+        use core_text::font_descriptor::{
+            kCTFontNameAttribute, kCTFontTraitsAttribute, kCTFontVariationAttribute,
+            kCTFontWeightTrait, kCTFontWidthTrait, new_from_attributes,
+        };
+
+        let descriptor = |attribute, axis: &str, value: f64| unsafe {
+            let details = CFDictionary::from_CFType_pairs(&[(
+                CFString::new(axis),
+                CFNumber::from(value).as_CFType(),
+            )]);
+            new_from_attributes(&CFDictionary::from_CFType_pairs(&[
+                (
+                    CFString::wrap_under_get_rule(kCTFontNameAttribute),
+                    CFString::new("SyntheticTestFont").as_CFType(),
+                ),
+                (
+                    CFString::wrap_under_get_rule(attribute),
+                    details.as_CFType(),
+                ),
+            ]))
+        };
+        let mut seen = Vec::new();
+        let first = descriptor(unsafe { kCTFontVariationAttribute }, "wght", 400.0);
+        assert_eq!(
+            classify_font_descriptor(&mut seen, first.clone()),
+            DuplicateFont::First
+        );
+        assert_eq!(
+            classify_font_descriptor(
+                &mut seen,
+                descriptor(unsafe { kCTFontVariationAttribute }, "wght", 400.0)
+            ),
+            DuplicateFont::Equivalent
+        );
+        for different in [
+            descriptor(unsafe { kCTFontVariationAttribute }, "wght", 700.0),
+            descriptor(unsafe { kCTFontVariationAttribute }, "wdth", 125.0),
+            descriptor(
+                unsafe { kCTFontTraitsAttribute },
+                &unsafe { CFString::wrap_under_get_rule(kCTFontWeightTrait) }.to_string(),
+                0.5,
+            ),
+            descriptor(
+                unsafe { kCTFontTraitsAttribute },
+                &unsafe { CFString::wrap_under_get_rule(kCTFontWidthTrait) }.to_string(),
+                0.5,
+            ),
+        ] {
+            assert_eq!(
+                classify_font_descriptor(&mut seen, different.clone()),
+                DuplicateFont::Conflict
+            );
+            assert_eq!(
+                classify_font_descriptor(&mut seen, different),
+                DuplicateFont::Equivalent
+            );
+        }
+        assert_eq!(seen.len(), 5);
+        assert!(seen[0].attributes() == first.attributes());
+        // A new load must accept the same descriptor independently.
+        assert_eq!(
+            classify_font_descriptor(&mut Vec::new(), first),
+            DuplicateFont::First
+        );
+    }
+
+    #[test]
+    fn native_family_reload_preserves_features_and_fallbacks() {
+        use gpui::{FontFallbacks, FontFeatures};
+        struct FontLogger;
+        thread_local! { static DIAGNOSTICS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+        impl log::Log for FontLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.level() <= log::Level::Warn {
+                    DIAGNOSTICS.with_borrow_mut(|records| records.push(record.args().to_string()));
+                }
+            }
+            fn flush(&self) {}
+        }
+        log::set_logger(&FontLogger).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+        let fonts = MacTextSystem::new();
+        let mut state = fonts.0.write();
+        for family in [".AppleSystemUIFont", "Helvetica", "Menlo"] {
+            let plain = state
+                .load_family(family, &FontFeatures::default(), None)
+                .unwrap();
+            let configured = state
+                .load_family(
+                    family,
+                    &FontFeatures::disable_ligatures(),
+                    Some(&FontFallbacks::from_fonts(vec!["Helvetica".into()])),
+                )
+                .unwrap();
+            assert!(!plain.is_empty(), "{family}");
+            assert_eq!(plain.len(), configured.len(), "{family}");
+            for (plain, configured) in plain.iter().zip(&configured) {
+                assert_ne!(plain, configured);
+                let plain = &state.fonts[plain.0];
+                let configured = &state.fonts[configured.0];
+                assert!(plain.glyph_for_char('m').is_some());
+                assert!(configured.glyph_for_char('m').is_some());
+                assert!(
+                    plain.native_font().copy_descriptor().attributes()
+                        != configured.native_font().copy_descriptor().attributes()
+                );
+            }
+        }
+        DIAGNOSTICS.with_borrow(|records| assert!(records.is_empty(), "{records:?}"));
+    }
 
     #[test]
     fn test_layout_line_bom_char() {
