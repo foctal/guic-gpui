@@ -295,6 +295,25 @@ impl AsyncWindowContext {
         self.window
     }
 
+    /// Update this window if it still exists, returning `None` after destruction.
+    /// App release, borrow conflicts, shutdown of a live window, and update errors
+    /// remain errors. The generational window ID cannot address a replacement window.
+    pub fn update_if_present<R>(
+        &mut self,
+        update: impl FnOnce(&mut Window, &mut App) -> R,
+    ) -> Result<Option<R>> {
+        let app = self.app.app.upgrade().context("app was released")?;
+        let mut app = app.try_borrow_mut()?;
+        if !app.windows.contains_key(self.window.window_id()) {
+            return Ok(None);
+        }
+        if app.quitting {
+            bail!("app is quitting");
+        }
+        app.update_window(self.window, |_, window, cx| update(window, cx))
+            .map(Some)
+    }
+
     /// A convenience method for [`App::update_window`].
     pub fn update<R>(&mut self, update: impl FnOnce(&mut Window, &mut App) -> R) -> Result<R> {
         self.app
