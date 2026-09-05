@@ -2608,6 +2608,7 @@ dependencies = [
  "raw-window-handle",
  "smallvec",
  "uuid",
+ "which",
  "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-numerics 0.2.0",
