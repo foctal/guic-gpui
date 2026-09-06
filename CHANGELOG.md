@@ -2,6 +2,14 @@
 
 All notable user-visible changes are recorded here.
 
+## [0.3.1] - 2026-09-06
+
+### Fixed
+
+- macOS: Compare font variation and descriptor dictionaries using Core Foundation
+  equality, restoring `font-kit` backend compatibility with `core-foundation`
+  0.10.0 while preserving font equivalence checks.
+
 ## [0.3.0] - 2026-09-06
 
 ### Fixed
