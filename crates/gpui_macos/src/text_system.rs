@@ -113,10 +113,16 @@ fn equivalent_native_fonts(first: &CTFont, second: &CTFont) -> bool {
         [m.a, m.b, m.c, m.d, m.tx, m.ty]
     };
     same_graphics
-        && first_graphics.copy_variations() == second_graphics.copy_variations()
+        && first_graphics
+            .copy_variations()
+            .map(|value| value.as_CFType())
+            == second_graphics
+                .copy_variations()
+                .map(|value| value.as_CFType())
         && first.pt_size() == second.pt_size()
         && matrix(first) == matrix(second)
-        && effective_font_attributes(first) == effective_font_attributes(second)
+        && effective_font_attributes(first).as_CFType()
+            == effective_font_attributes(second).as_CFType()
 }
 
 // System UI usage is a selection hint: Bold and Emphasized can resolve to the
@@ -875,6 +881,21 @@ mod tests {
     use gpui::{FontRun, GlyphId, PlatformTextSystem, font, px};
 
     #[test]
+    fn native_font_equivalence_preserves_face_and_size() {
+        use super::equivalent_native_fonts;
+        use core_text::font::new_from_name;
+
+        let first = new_from_name("Helvetica", 12.0).unwrap();
+        let equivalent = new_from_name("Helvetica", 12.0).unwrap();
+        let different_size = first.clone_with_font_size(18.0);
+        let different_face = new_from_name("Menlo", 12.0).unwrap();
+
+        assert!(equivalent_native_fonts(&first, &equivalent));
+        assert!(!equivalent_native_fonts(&first, &different_size));
+        assert!(!equivalent_native_fonts(&first, &different_face));
+    }
+
+    #[test]
     fn invalid_font_registration_is_independent_of_duplicates() {
         use super::{InvalidFont, validated_font_name};
         use core_foundation::{
@@ -930,7 +951,9 @@ mod tests {
             seen: &mut Vec<core_text::font_descriptor::CTFontDescriptor>,
             font: core_text::font_descriptor::CTFontDescriptor,
         ) -> DuplicateFont {
-            classify_duplicate(seen, font, |a, b| a.attributes() == b.attributes())
+            classify_duplicate(seen, font, |a, b| {
+                a.attributes().as_CFType() == b.attributes().as_CFType()
+            })
         }
         use core_foundation::{
             base::TCFType, dictionary::CFDictionary, number::CFNumber, string::CFString,
@@ -993,7 +1016,7 @@ mod tests {
             );
         }
         assert_eq!(seen.len(), 5);
-        assert!(seen[0].attributes() == first.attributes());
+        assert!(seen[0].attributes().as_CFType() == first.attributes().as_CFType());
         // A new load must accept the same descriptor independently.
         assert_eq!(
             classify_font_descriptor(&mut Vec::new(), first),
@@ -1003,6 +1026,7 @@ mod tests {
 
     #[test]
     fn native_family_reload_preserves_features_and_fallbacks() {
+        use core_foundation::base::TCFType;
         use gpui::{FontFallbacks, FontFeatures};
         struct FontLogger;
         thread_local! { static DIAGNOSTICS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
@@ -1041,8 +1065,16 @@ mod tests {
                 assert!(plain.glyph_for_char('m').is_some());
                 assert!(configured.glyph_for_char('m').is_some());
                 assert!(
-                    plain.native_font().copy_descriptor().attributes()
-                        != configured.native_font().copy_descriptor().attributes()
+                    plain
+                        .native_font()
+                        .copy_descriptor()
+                        .attributes()
+                        .as_CFType()
+                        != configured
+                            .native_font()
+                            .copy_descriptor()
+                            .attributes()
+                            .as_CFType()
                 );
             }
         }

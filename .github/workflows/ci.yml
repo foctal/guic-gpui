@@ -32,3 +32,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo check --workspace --locked
+      - name: Check macOS font-kit backend
+        if: runner.os == 'macOS'
+        run: cargo check -p guic-gpui-macos --features font-kit --locked
+      - name: Test macOS font-kit backend
+        if: runner.os == 'macOS'
+        run: cargo test -p guic-gpui-macos --features font-kit --locked
+      - name: Check and test macOS font-kit with core-foundation 0.10.0
+        if: runner.os == 'macOS'
+        run: |
+          cargo update -p core-foundation --precise 0.10.0
+          cargo check -p guic-gpui-macos --features font-kit --locked
+          cargo test -p guic-gpui-macos --features font-kit --locked
