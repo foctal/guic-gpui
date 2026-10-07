@@ -777,7 +777,36 @@ impl Platform for WindowsPlatform {
         should_auto_hide_scrollbars().log_err().unwrap_or(false)
     }
 
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        true
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        crate::clipboard::write_files_to_clipboard(self.handle, paths, operation)
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
+        let paths = ExternalPaths(
+            item.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect(),
+        );
+        if !paths.paths().is_empty() {
+            if let Err(error) = self.write_files_to_clipboard(paths, FileClipboardOperation::Copy) {
+                log::warn!("Failed to write file clipboard: {error}");
+            }
+            return;
+        }
         write_to_clipboard(item);
     }
 

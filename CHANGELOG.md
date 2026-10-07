@@ -2,6 +2,17 @@
 
 All notable user-visible changes are recorded here.
 
+## Unreleased
+
+- Add a fallible native file clipboard API with separate copy/move intent and
+  capability reporting. Implement macOS copy, Windows CF_HDROP, and X11/Wayland
+  file MIME offers. macOS move and unsupported backends return explicit errors.
+  See [the contract and native validation checklist](docs/file-clipboard.md).
+- Include both nodes and their element provenance in debug duplicate-focus
+  diagnostics, preserving the accessibility invariant.
+- Add `Window::enable_a11y_for_testing` under `test-support`, with corrected and
+  invalid nested-focus component fixtures.
+
 ## [0.3.1] - 2026-09-06
 
 ### Fixed

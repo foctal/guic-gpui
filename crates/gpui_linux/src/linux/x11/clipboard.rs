@@ -78,7 +78,9 @@ x11rb::atom_manager! {
         TEXT_MIME_UNKNOWN: b"text/plain",
 
         // HTML: b"text/html",
-        // URI_LIST: b"text/uri-list",
+        URI_LIST: b"text/uri-list",
+        GNOME_FILES: b"x-special/gnome-copied-files",
+        KDE_CUT: b"application/x-kde-cutselection",
 
         PNG__MIME: ImageFormat::mime_type(ImageFormat::Png ).as_bytes(),
         JPEG_MIME: ImageFormat::mime_type(ImageFormat::Jpeg).as_bytes(),
@@ -975,6 +977,41 @@ impl Clipboard {
             server_handle: join_handle,
         });
         Ok(Self { inner: ctx })
+    }
+
+    pub(crate) fn set_files(
+        &self,
+        paths: &gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> std::result::Result<(), gpui::FileClipboardError> {
+        let data = vec![
+            ClipboardData {
+                bytes: paths.clipboard_uri_list()?.into_bytes(),
+                format: self.inner.atoms.URI_LIST,
+            },
+            ClipboardData {
+                bytes: paths.clipboard_gnome_files(operation)?.into_bytes(),
+                format: self.inner.atoms.GNOME_FILES,
+            },
+            ClipboardData {
+                bytes: if operation == gpui::FileClipboardOperation::Move {
+                    b"1"
+                } else {
+                    b"0"
+                }
+                .to_vec(),
+                format: self.inner.atoms.KDE_CUT,
+            },
+        ];
+        self.inner
+            .write(data, ClipboardKind::Clipboard, WaitConfig::None)
+            .map_err(|error| gpui::FileClipboardError::Unavailable(error.to_string()))?;
+        if !self.is_owner(ClipboardKind::Clipboard) {
+            return Err(gpui::FileClipboardError::Unavailable(
+                "X11 selection ownership was not acquired".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn set_text(

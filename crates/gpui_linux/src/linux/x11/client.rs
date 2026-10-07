@@ -1753,7 +1753,44 @@ impl LinuxClient for X11Client {
             .log_with_level(log::Level::Debug);
     }
 
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        true
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        let mut state = self.0.borrow_mut();
+        state.clipboard.set_files(&paths, operation)?;
+        state.clipboard_item = Some(gpui::ClipboardItem {
+            entries: vec![gpui::ClipboardEntry::ExternalPaths(paths)],
+        });
+        Ok(())
+    }
+
     fn write_to_clipboard(&self, item: gpui::ClipboardItem) {
+        let paths = gpui::ExternalPaths(
+            item.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    gpui::ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect(),
+        );
+        if !paths.paths().is_empty() {
+            if let Err(error) =
+                self.write_files_to_clipboard(paths, gpui::FileClipboardOperation::Copy)
+            {
+                log::warn!("Failed to write file clipboard: {error}");
+            }
+            return;
+        }
+
         let mut state = self.0.borrow_mut();
         state
             .clipboard

@@ -89,6 +89,17 @@ pub(crate) trait LinuxClient {
     fn reveal_path(&self, path: PathBuf);
     fn write_to_primary(&self, item: ClipboardItem);
     fn write_to_clipboard(&self, item: ClipboardItem);
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        false
+    }
+    fn write_files_to_clipboard(
+        &self,
+        _paths: gpui::ExternalPaths,
+        _operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        Err(gpui::FileClipboardError::Unsupported)
+    }
+
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
@@ -731,6 +742,18 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
 
     fn write_to_primary(&self, item: ClipboardItem) {
         self.inner.write_to_primary(item)
+    }
+
+    fn supports_file_clipboard(&self, operation: gpui::FileClipboardOperation) -> bool {
+        self.inner.supports_file_clipboard(operation)
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        self.inner.write_files_to_clipboard(paths, operation)
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {

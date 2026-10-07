@@ -1118,6 +1118,21 @@ impl Platform for MacPlatform {
         state.general_pasteboard.read()
     }
 
+    fn supports_file_clipboard(&self, operation: gpui::FileClipboardOperation) -> bool {
+        operation == gpui::FileClipboardOperation::Copy
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        self.0
+            .lock()
+            .general_pasteboard
+            .write_files(&paths, operation)
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
         let state = self.0.lock();
         state.general_pasteboard.write(item);

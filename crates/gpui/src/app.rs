@@ -1374,6 +1374,29 @@ impl App {
         self.text_rendering_mode.get()
     }
 
+    /// Reports backend support for native file clipboard writes with this intent.
+    pub fn supports_file_clipboard(&self, operation: crate::FileClipboardOperation) -> bool {
+        self.platform.supports_file_clipboard(operation)
+    }
+
+    /// Publishes file paths and copy/move intent to the native clipboard.
+    ///
+    /// GPUI never moves or deletes files. Success means the native write was
+    /// accepted, not that a recipient pasted the files. On error the clipboard
+    /// may have been partially replaced; callers must not delete source files.
+    /// Unsupported backends return an error without replacing the clipboard.
+    pub fn write_files_to_clipboard(
+        &self,
+        paths: crate::ExternalPaths,
+        operation: crate::FileClipboardOperation,
+    ) -> std::result::Result<(), crate::FileClipboardError> {
+        if !self.supports_file_clipboard(operation) {
+            return Err(crate::FileClipboardError::Unsupported);
+        }
+        paths.validate_for_clipboard()?;
+        self.platform.write_files_to_clipboard(paths, operation)
+    }
+
     /// Writes data to the platform clipboard.
     pub fn write_to_clipboard(&self, item: ClipboardItem) {
         self.platform.write_to_clipboard(item)
