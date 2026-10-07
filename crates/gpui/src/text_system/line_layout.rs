@@ -350,10 +350,11 @@ impl WrappedLineLayout {
                     .unwrapped_layout
                     .closest_index_for_x(position_in_unwrapped_line.x))
             } else {
-                Ok(self
-                    .unwrapped_layout
+                // The shaper can place a trailing zero-width wrap boundary glyph slightly past
+                // the line's width, so the row can extend past where `index_for_x` has glyphs.
+                self.unwrapped_layout
                     .index_for_x(position_in_unwrapped_line.x)
-                    .unwrap())
+                    .ok_or(wrapped_line_end_index)
             }
         }
     }
@@ -991,6 +992,33 @@ mod tests {
             .iter()
             .map(|g| f32::from(g.position.x))
             .collect()
+    }
+
+    #[test]
+    fn test_hit_testing_past_width_before_wrap_boundary() {
+        // A trailing zero-width glyph can be positioned beyond the measured width.
+        let mut layout = make_layout(vec![glyph_at(0., 0), glyph_at(101., 1)]);
+        layout.len = 2;
+        let wrapped = WrappedLineLayout {
+            unwrapped_layout: Arc::new(layout),
+            wrap_boundaries: smallvec::smallvec![WrapBoundary {
+                run_ix: 0,
+                glyph_ix: 1
+            }],
+            wrap_width: Some(px(100.)),
+        };
+        assert_eq!(
+            wrapped.index_for_position(point(px(50.), px(0.)), px(16.)),
+            Ok(0)
+        );
+        assert_eq!(
+            wrapped.index_for_position(point(px(100.5), px(0.)), px(16.)),
+            Err(1)
+        );
+        assert_eq!(
+            wrapped.index_for_position(point(px(101.), px(0.)), px(16.)),
+            Err(1)
+        );
     }
 
     #[test]
