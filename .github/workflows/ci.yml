@@ -20,6 +20,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo check --workspace --locked
       - run: cargo test -p guic-gpui --lib --locked
+      - name: Test Linux XKB keymaps
+        run: cargo test -p guic-gpui-linux --features test-support --lib linux::x11::client::tests --locked
+      - name: Test WGPU text layout
+        run: cargo test -p guic-gpui-wgpu --lib --locked
 
   platform-check:
     name: Check (${{ matrix.os }})
@@ -37,6 +41,9 @@ jobs:
       - name: Test Windows file clipboard serialization
         if: runner.os == 'Windows'
         run: cargo test -p guic-gpui-windows --features test-support --lib file_clipboard_tests --locked
+      - name: Test Windows text clipboard round trips
+        if: runner.os == 'Windows'
+        run: cargo test -p guic-gpui-windows --features test-support --lib platform::tests::test_clipboard --locked
       - name: Check macOS font-kit backend
         if: runner.os == 'macOS'
         run: cargo check -p guic-gpui-macos --features font-kit --locked
