@@ -271,6 +271,20 @@
 //! [prepainted][Element::prepaint], so prepaint state can be used (for example,
 //! to determine what is visible on screen).
 //!
+//! ## Component tests
+//!
+//! `TestAppContext` does not have a native accessibility adapter. Enable tree
+//! construction explicitly with `Window::enable_a11y_for_testing` (available
+//! with `test-support`), drain the test executor, then inspect
+//! `Window::debug_a11y_tree_json`. This runs the same tree builder and focus
+//! invariants used by native windows. Track a focus handle on exactly one
+//! element: a dialog containing a focused input must not track the input's
+//! handle on its own wrapper. Debug duplicate-focus diagnostics include both
+//! node IDs and their element/view/source provenance.
+//!
+//! This validates component structure, not screen-reader announcements, native
+//! adapter activation, IME, or platform accessibility interoperability.
+//!
 //! ## Further reading
 //!
 //! Designing high-quality accessible interfaces can be challenging, in the same

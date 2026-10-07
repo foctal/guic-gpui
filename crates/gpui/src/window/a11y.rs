@@ -213,6 +213,12 @@ impl A11y {
         self.active_this_frame = !self.force_disabled && self.active_flag.load(Ordering::SeqCst);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn enable_for_test(&mut self) {
+        self.force_disabled = false;
+        self.active_flag.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.active_this_frame
     }
@@ -524,15 +530,20 @@ impl A11yNodeBuilder {
     }
 
     pub(crate) fn set_focus(&mut self, id: NodeId) {
-        if self.focus.is_some() {
-            if cfg!(debug_assertions) {
-                panic!("set_focus called more than once in a single frame");
-            } else {
-                log::warn!(
-                    "a11y: set_focus called more than once in a single frame; \
-                     using last-wins ({id:?})"
-                );
-            }
+        if let Some(previous) = self.focus {
+            #[cfg(debug_assertions)]
+            panic!(
+                "set_focus called more than once in a single frame: first node {previous:?} \
+                 owned by {:?}; second node {id:?} owned by {:?}. \
+                 Register each FocusHandle on exactly one element with track_focus.",
+                self.node_info.get(&previous),
+                self.node_info.get(&id),
+            );
+            #[cfg(not(debug_assertions))]
+            log::warn!(
+                "a11y: set_focus called more than once in a single frame: \
+                 first node {previous:?}, second node {id:?}; using last-wins"
+            );
         }
         self.focus = Some(id);
     }

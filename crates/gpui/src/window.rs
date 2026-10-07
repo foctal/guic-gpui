@@ -5974,6 +5974,18 @@ impl Window {
         self.a11y.is_active()
     }
 
+    /// Enables accessibility tree construction for component tests without a native adapter.
+    ///
+    /// Call this before drawing the test window, then inspect
+    /// [`Self::debug_a11y_tree_json`] after the next frame. Normal focus and node
+    /// invariants apply, including duplicate-focus panics in debug builds.
+    /// This validates the component tree, not native screen-reader integration.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn enable_a11y_for_testing(&mut self) {
+        self.a11y.enable_for_test();
+        self.refresh();
+    }
+
     /// Debug representation of the last frame's accessibility information.
     pub fn debug_a11y_tree_json(&self) -> Option<String> {
         self.a11y.debug_tree_json()
@@ -6785,6 +6797,63 @@ mod tests {
         Styled, TestAppContext, Window, WindowAppearance, WindowOptions, canvas, div, point, px,
         size,
     };
+
+    struct AccessibilityFocusFixture {
+        focus: FocusHandle,
+        duplicate: bool,
+    }
+
+    impl Render for AccessibilityFocusFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let mut outer = div().id("dialog-owner").role(accesskit::Role::Dialog);
+            if self.duplicate {
+                outer = outer.track_focus(&self.focus);
+            }
+            outer.child(
+                div()
+                    .id("input-owner")
+                    .role(accesskit::Role::TextInput)
+                    .track_focus(&self.focus),
+            )
+        }
+    }
+
+    fn draw_accessibility_fixture(cx: &mut TestAppContext, duplicate: bool) -> String {
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            AccessibilityFocusFixture { focus, duplicate }
+        });
+        cx.update(|window, _| window.enable_a11y_for_testing());
+        cx.run_until_parked();
+        cx.update(|window, _| {
+            window
+                .debug_a11y_tree_json()
+                .expect("accessibility tree was built")
+        })
+    }
+
+    #[gpui::test]
+    fn accessibility_tree_can_be_built_without_native_adapter(cx: &mut TestAppContext) {
+        let tree = draw_accessibility_fixture(cx, false);
+        let tree: serde_json::Value = serde_json::from_str(&tree).unwrap();
+        let focus = tree["gpui_focus"].as_str().expect("focused node");
+        #[cfg(debug_assertions)]
+        assert!(
+            tree["nodes"][focus]["element_id"]
+                .as_str()
+                .unwrap()
+                .contains("input-owner")
+        );
+        assert_eq!(tree["nodes"].as_object().unwrap().len(), 3);
+    }
+
+    #[gpui::test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "second node")]
+    fn nested_duplicate_focus_is_detected_in_component_tests(cx: &mut TestAppContext) {
+        draw_accessibility_fixture(cx, true);
+    }
 
     struct EmptyView;
 
