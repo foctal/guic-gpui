@@ -4,6 +4,20 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
+- Avoid a panic when hit testing beyond a wrapped line's measured width and keep
+  closing punctuation attached to the preceding word when wrapping.
+- Exclude disabled key bindings from next-keystroke suggestions.
+- Center and constrain windows within the display's visible work area.
+- Preserve debug selectors when reusing cached views, and support simulated
+  display scale changes in test windows.
+- macOS: Release the accessibility adapter on window teardown and stop replaying
+  synthetic drag events after the original mouse button is released.
+- Linux: Avoid local XKB include paths when loading server-provided keymaps.
+- WGPU: Preserve fonts without Latin glyphs for fallback text rendering.
+- Windows: Preserve default DirectWrite ligatures, replace embedded clipboard NUL
+  characters with spaces while preserving metadata, and fix manifest resource
+  include paths for cross-compilation.
+
 - Add a fallible native file clipboard API with separate copy/move intent and
   capability reporting. Implement macOS copy, Windows CF_HDROP, and X11/Wayland
   file MIME offers. macOS move and unsupported backends return explicit errors.
