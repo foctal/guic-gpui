@@ -61,6 +61,9 @@ js-sys.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+wgpu = { workspace = true, features = ["noop"] }
+
 [[bench]]
 name = "layout_line"
 harness = false

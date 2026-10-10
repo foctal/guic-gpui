@@ -29,7 +29,7 @@ jobs:
         run: cargo test -p guic-gpui-linux --features test-support --lib --locked
       - name: Test native X11 file clipboard
         run: xvfb-run -a cargo test -p guic-gpui-linux --features test-support --lib native_file_clipboard_round_trip --locked -- --ignored
-      - name: Test WGPU text layout
+      - name: Test WGPU text layout and atlas
         run: cargo test -p guic-gpui-wgpu --lib --locked
 
   platform-check:
