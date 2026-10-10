@@ -109,25 +109,29 @@ mod tests {
 
     impl Render for PanelView {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().key_context("Panel").size_full().child(
-                deferred(
-                    anchored().position(point(px(10.), px(10.))).child(
-                        div().key_context("Popover").w(px(200.)).h(px(200.)).child(
-                            deferred(
-                                anchored().position(point(px(30.), px(30.))).child(
-                                    div()
-                                        .key_context("NestedMenu")
-                                        .debug_selector(|| "NESTED_MENU".into())
-                                        .w(px(50.))
-                                        .h(px(50.)),
-                                ),
-                            )
-                            .with_priority(2),
+            div()
+                .debug_selector(|| "PANEL".into())
+                .key_context("Panel")
+                .size_full()
+                .child(
+                    deferred(
+                        anchored().position(point(px(10.), px(10.))).child(
+                            div().key_context("Popover").w(px(200.)).h(px(200.)).child(
+                                deferred(
+                                    anchored().position(point(px(30.), px(30.))).child(
+                                        div()
+                                            .key_context("NestedMenu")
+                                            .debug_selector(|| "NESTED_MENU".into())
+                                            .w(px(50.))
+                                            .h(px(50.)),
+                                    ),
+                                )
+                                .with_priority(2),
+                            ),
                         ),
-                    ),
+                    )
+                    .with_priority(1),
                 )
-                .with_priority(1),
-            )
         }
     }
 
@@ -171,17 +175,47 @@ mod tests {
             .unwrap()
             .expect("NESTED_MENU debug bounds not found");
         assert_eq!(menu_bounds.size, size(px(50.), px(50.)));
+        let panel_bounds = window
+            .update(
+                cx,
+                |_, window, _| window.rendered_frame.debug_bounds["PANEL"],
+            )
+            .unwrap();
 
         // Re-render only the root view; the panel is cached, so its subtree -
         // including both deferred draw records - is reused from the previous
         // frame.
         window.update(cx, |_, _, cx| cx.notify()).unwrap();
         cx.run_until_parked();
+        window
+            .update(cx, |_, window, _| {
+                assert_eq!(
+                    window.rendered_frame.debug_bounds.get("NESTED_MENU"),
+                    Some(&menu_bounds)
+                );
+                assert_eq!(
+                    window.rendered_frame.debug_bounds.get("PANEL"),
+                    Some(&panel_bounds)
+                );
+            })
+            .unwrap();
 
         // Reuse the subtree a second time, exercising ranges that were
         // themselves recorded during a reused frame.
         window.update(cx, |_, _, cx| cx.notify()).unwrap();
         cx.run_until_parked();
+        window
+            .update(cx, |_, window, _| {
+                assert_eq!(
+                    window.rendered_frame.debug_bounds.get("NESTED_MENU"),
+                    Some(&menu_bounds)
+                );
+                assert_eq!(
+                    window.rendered_frame.debug_bounds.get("PANEL"),
+                    Some(&panel_bounds)
+                );
+            })
+            .unwrap();
 
         // Re-render the panel itself again to prove the popovers still draw.
         window

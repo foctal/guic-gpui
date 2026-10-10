@@ -309,6 +309,21 @@ pub trait Platform: 'static {
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 
+    /// Whether this backend can publish file paths with the requested intent.
+    /// Availability at the time of the write is reported separately by the writer.
+    fn supports_file_clipboard(&self, _operation: FileClipboardOperation) -> bool {
+        false
+    }
+
+    /// Publishes files to the native clipboard without performing filesystem operations.
+    fn write_files_to_clipboard(
+        &self,
+        _paths: crate::ExternalPaths,
+        _operation: FileClipboardOperation,
+    ) -> std::result::Result<(), FileClipboardError> {
+        Err(FileClipboardError::Unsupported)
+    }
+
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -1541,7 +1556,7 @@ impl PlatformInputHandler {
             }
             bounds_for_range(line_start..line_start)
         } else {
-            // No active composition — use the selection endpoint.
+            // No active composition \u{2014} use the selection endpoint.
             let offset = if selection.reversed {
                 selection.range.start
             } else {
@@ -1731,7 +1746,7 @@ pub trait InputHandler: 'static {
     ///
     /// This is the reverse data-flow direction from [`Self::selected_text_range`]:
     /// platforms call it when the system text machinery moves the selection on the
-    /// application's behalf — e.g. the user drags a system selection handle or
+    /// application's behalf \u{2014} e.g. the user drags a system selection handle or
     /// invokes Select All from system UI (iOS `UITextInput setSelectedTextRange:`,
     /// Android `InputConnection.setSelection`).
     ///
@@ -2258,6 +2273,76 @@ pub enum CursorStyle {
     ContextualMenu,
 }
 
+/// The requested operation when a file manager pastes a file list.
+/// This is a hint to the recipient, not a request for GPUI to delete any files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileClipboardOperation {
+    /// Copy the files.
+    Copy,
+    /// Request a move. The receiving application owns the actual file operation.
+    Move,
+}
+
+/// A native file clipboard write could not be completed.
+#[derive(Debug, thiserror::Error)]
+pub enum FileClipboardError {
+    /// The backend does not support this operation.
+    #[error("file clipboard operation is unsupported on this backend")]
+    Unsupported,
+    /// A file list must be nonempty and contain absolute paths without NUL bytes.
+    #[error("file clipboard paths must be nonempty, absolute, and contain no NUL bytes")]
+    InvalidPaths,
+    /// Clipboard access or selection ownership is currently unavailable.
+    #[error("file clipboard unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl crate::ExternalPaths {
+    /// Validates paths before a native clipboard write can replace existing contents.
+    /// No filesystem access is performed and paths need not exist yet.
+    pub fn validate_for_clipboard(&self) -> std::result::Result<(), FileClipboardError> {
+        if self.0.is_empty()
+            || self
+                .0
+                .iter()
+                .any(|path| !path.is_absolute() || path.as_os_str().as_encoded_bytes().contains(&0))
+        {
+            return Err(FileClipboardError::InvalidPaths);
+        }
+        Ok(())
+    }
+
+    /// Serializes absolute file URLs for the `text/uri-list` clipboard format.
+    /// Reserved characters, Unicode and line breaks are percent-encoded.
+    pub fn clipboard_uri_list(&self) -> std::result::Result<String, FileClipboardError> {
+        self.validate_for_clipboard()?;
+        let mut result = String::new();
+        for path in &self.0 {
+            let uri =
+                url::Url::from_file_path(path).map_err(|_| FileClipboardError::InvalidPaths)?;
+            result.push_str(uri.as_str());
+            result.push_str("\r\n");
+        }
+        Ok(result)
+    }
+
+    /// Serializes the GNOME file clipboard format, including copy or move intent.
+    pub fn clipboard_gnome_files(
+        &self,
+        operation: FileClipboardOperation,
+    ) -> std::result::Result<String, FileClipboardError> {
+        let uris = self.clipboard_uri_list()?;
+        let verb = match operation {
+            FileClipboardOperation::Copy => "copy",
+            FileClipboardOperation::Move => "cut",
+        };
+        Ok(format!(
+            "{verb}\n{}",
+            uris.trim_end_matches("\r\n").replace("\r\n", "\n")
+        ))
+    }
+}
+
 /// A clipboard item that should be copied to the clipboard
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardItem {
@@ -2272,7 +2357,8 @@ pub enum ClipboardEntry {
     String(ClipboardString),
     /// An image entry
     Image(Image),
-    /// A file entry
+    /// A file list. Legacy clipboard writes interpret this as copy intent.
+    /// Use [`App::write_files_to_clipboard`] for move intent and error reporting.
     ExternalPaths(crate::ExternalPaths),
 }
 
@@ -2912,5 +2998,67 @@ mod tests {
     #[test]
     fn test_window_button_layout_parse_all_invalid() {
         assert!(WindowButtonLayout::parse("asdfghjkl").is_err());
+    }
+}
+
+#[cfg(test)]
+mod file_clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_file_lists_are_rejected() {
+        for names in [vec![], vec!["relative"], vec!["/tmp/nul\0file"]] {
+            let paths = crate::ExternalPaths(names.into_iter().map(PathBuf::from).collect());
+            assert!(matches!(
+                paths.validate_for_clipboard(),
+                Err(FileClipboardError::InvalidPaths)
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_mime_payloads_escape_unicode_and_record_intent() {
+        let paths = crate::ExternalPaths(
+            ["/tmp/\u{65e5}\u{672c}\u{8a9e} #%.txt", "/tmp/line\nbreak"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        );
+        let uris = paths.clipboard_uri_list().unwrap();
+        assert!(uris.contains("%20%23%25.txt\r\n"));
+        assert!(uris.contains("line%0Abreak\r\n"));
+        let decoded: Vec<_> = uris
+            .lines()
+            .map(|line| url::Url::parse(line).unwrap().to_file_path().unwrap())
+            .collect();
+        assert_eq!(decoded, paths.paths());
+        assert_eq!(
+            paths
+                .clipboard_gnome_files(FileClipboardOperation::Copy)
+                .unwrap(),
+            format!("copy\n{}", uris.trim_end().replace("\r\n", "\n"))
+        );
+        assert!(
+            paths
+                .clipboard_gnome_files(FileClipboardOperation::Move)
+                .unwrap()
+                .starts_with("cut\n")
+        );
+    }
+
+    #[crate::test]
+    fn unsupported_backend_preserves_existing_clipboard(cx: &mut crate::TestAppContext) {
+        cx.update(|cx| {
+            let original = ClipboardItem::new_string("keep".into());
+            cx.write_to_clipboard(original.clone());
+            assert!(!cx.supports_file_clipboard(FileClipboardOperation::Copy));
+            let paths = crate::ExternalPaths(Default::default());
+            assert!(matches!(
+                cx.write_files_to_clipboard(paths, FileClipboardOperation::Copy),
+                Err(FileClipboardError::Unsupported)
+            ));
+            assert_eq!(cx.read_from_clipboard(), Some(original));
+        });
     }
 }

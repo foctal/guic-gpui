@@ -777,7 +777,36 @@ impl Platform for WindowsPlatform {
         should_auto_hide_scrollbars().log_err().unwrap_or(false)
     }
 
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        true
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        crate::clipboard::write_files_to_clipboard(self.handle, paths, operation)
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
+        let paths = ExternalPaths(
+            item.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect(),
+        );
+        if !paths.paths().is_empty() {
+            if let Err(error) = self.write_files_to_clipboard(paths, FileClipboardOperation::Copy) {
+                log::warn!("Failed to write file clipboard: {error}");
+            }
+            return;
+        }
         write_to_clipboard(item);
     }
 
@@ -1509,5 +1538,84 @@ mod tests {
         let item = ClipboardItem::new_string_with_json_metadata("abcdef".to_string(), vec![3, 4]);
         write_to_clipboard(item.clone());
         assert_eq!(read_from_clipboard(), Some(item));
+
+        let item =
+            ClipboardItem::new_string_with_json_metadata("before\0after".to_string(), vec![12]);
+        write_to_clipboard(item);
+        assert_eq!(
+            read_from_clipboard(),
+            Some(ClipboardItem::new_string_with_json_metadata(
+                "before after".to_string(),
+                vec![12],
+            )),
+        );
+
+        // Keep native clipboard checks in one test to avoid competing owners.
+        test_file_clipboard();
+    }
+
+    fn test_file_clipboard() {
+        use gpui::{
+            ClipboardEntry, ExternalPaths, FileClipboardError, FileClipboardOperation, Platform,
+        };
+        use std::path::PathBuf;
+        use windows::Win32::Foundation::HGLOBAL;
+        use windows::Win32::System::{
+            DataExchange::{
+                CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW,
+            },
+            Memory::{GlobalLock, GlobalUnlock},
+        };
+
+        let platform = super::WindowsPlatform::new(true).expect("headless Windows platform");
+        let paths = ExternalPaths(
+            [
+                "C:\\files\\report \u{65e5}\u{672c}.txt",
+                "C:\\files\\emoji-\u{1f4c4}.txt",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        );
+        let expected = ClipboardItem {
+            entries: vec![ClipboardEntry::ExternalPaths(paths.clone())],
+        };
+        for (operation, effect) in [
+            (FileClipboardOperation::Copy, 1u32),
+            (FileClipboardOperation::Move, 2u32),
+        ] {
+            assert!(platform.supports_file_clipboard(operation));
+            platform
+                .write_files_to_clipboard(paths.clone(), operation)
+                .unwrap();
+            assert_eq!(platform.read_from_clipboard(), Some(expected.clone()));
+            unsafe {
+                OpenClipboard(None).unwrap();
+                let format = RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"));
+                let global = HGLOBAL(GetClipboardData(format).unwrap().0);
+                let pointer = GlobalLock(global);
+                assert!(!pointer.is_null());
+                let actual = pointer.cast::<u32>().read();
+                GlobalUnlock(global).ok();
+                CloseClipboard().unwrap();
+                assert_eq!(actual, effect);
+            }
+            for invalid in [vec![], vec!["relative.txt"], vec!["C:\\files\\nul\0.txt"]] {
+                assert!(matches!(
+                    platform.write_files_to_clipboard(
+                        ExternalPaths(invalid.into_iter().map(PathBuf::from).collect()),
+                        operation,
+                    ),
+                    Err(FileClipboardError::InvalidPaths)
+                ));
+                assert_eq!(platform.read_from_clipboard(), Some(expected.clone()));
+            }
+        }
+
+        platform.write_to_clipboard(expected.clone());
+        assert_eq!(platform.read_from_clipboard(), Some(expected));
+        let replacement = ClipboardItem::new_string("replacement".into());
+        write_to_clipboard(replacement.clone());
+        assert_eq!(platform.read_from_clipboard(), Some(replacement));
     }
 }

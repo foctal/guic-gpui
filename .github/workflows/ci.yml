@@ -16,9 +16,21 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
-      - run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev xvfb xauth
       - run: cargo fmt --all --check
       - run: cargo check --workspace --locked
+      - run: cargo test -p guic-gpui --lib --locked
+      - name: Check Linux backend feature combinations
+        run: |
+          cargo check -p guic-gpui-linux --no-default-features --locked
+          cargo check -p guic-gpui-linux --no-default-features --features x11 --locked
+          cargo check -p guic-gpui-linux --no-default-features --features wayland --locked
+      - name: Test Linux backends
+        run: cargo test -p guic-gpui-linux --features test-support --lib --locked
+      - name: Test native X11 file clipboard
+        run: xvfb-run -a cargo test -p guic-gpui-linux --features test-support --lib native_file_clipboard_round_trip --locked -- --ignored
+      - name: Test WGPU text layout and atlas
+        run: cargo test -p guic-gpui-wgpu --lib --locked
 
   platform-check:
     name: Check (${{ matrix.os }})
@@ -32,6 +44,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo check --workspace --locked
+      - run: cargo test -p guic-gpui --lib --locked
+      - name: Test Windows file clipboard serialization
+        if: runner.os == 'Windows'
+        run: cargo test -p guic-gpui-windows --features test-support --lib file_clipboard_tests --locked
+      - name: Test Windows text clipboard round trips
+        if: runner.os == 'Windows'
+        run: cargo test -p guic-gpui-windows --features test-support --lib platform::tests::test_clipboard --locked
       - name: Check macOS font-kit backend
         if: runner.os == 'macOS'
         run: cargo check -p guic-gpui-macos --features font-kit --locked

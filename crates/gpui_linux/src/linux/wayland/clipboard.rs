@@ -31,6 +31,7 @@ pub(crate) struct Clipboard {
 
     // Internal clipboard
     contents: Option<ClipboardItem>,
+    file_operation: Option<gpui::FileClipboardOperation>,
     primary_contents: Option<ClipboardItem>,
 
     // External clipboard
@@ -149,6 +150,7 @@ impl Clipboard {
             self_mime: format!("pid/{}", std::process::id()),
 
             contents: None,
+            file_operation: None,
             primary_contents: None,
 
             cached_read: None,
@@ -160,6 +162,18 @@ impl Clipboard {
 
     pub fn set(&mut self, item: ClipboardItem) {
         self.contents = Some(item);
+        self.file_operation = None;
+    }
+
+    pub fn set_files(
+        &mut self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) {
+        self.contents = Some(ClipboardItem {
+            entries: vec![ClipboardEntry::ExternalPaths(paths)],
+        });
+        self.file_operation = Some(operation);
     }
 
     pub fn set_primary(&mut self, item: ClipboardItem) {
@@ -180,7 +194,33 @@ impl Clipboard {
         self.self_mime.clone()
     }
 
-    pub fn send(&self, _mime_type: String, fd: OwnedFd) {
+    pub fn send(&self, mime_type: String, fd: OwnedFd) {
+        if let Some(operation) = self.file_operation {
+            let Some(ClipboardEntry::ExternalPaths(paths)) =
+                self.contents.as_ref().and_then(|item| item.entries.first())
+            else {
+                return;
+            };
+            let bytes = match mime_type.as_str() {
+                FILE_LIST_MIME_TYPE => paths.clipboard_uri_list().map(String::into_bytes),
+                "x-special/gnome-copied-files" => paths
+                    .clipboard_gnome_files(operation)
+                    .map(String::into_bytes),
+                "application/x-kde-cutselection" => {
+                    Ok(if operation == gpui::FileClipboardOperation::Move {
+                        b"1"
+                    } else {
+                        b"0"
+                    }
+                    .to_vec())
+                }
+                _ => return,
+            };
+            if let Ok(bytes) = bytes {
+                self.send_bytes(fd, bytes);
+            }
+            return;
+        }
         if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
             self.send_bytes(fd, text.as_bytes().to_owned());
         }

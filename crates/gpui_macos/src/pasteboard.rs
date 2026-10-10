@@ -10,7 +10,7 @@ use cocoa::{
     base::{id, nil},
     foundation::{NSArray, NSData, NSFastEnumeration, NSString},
 };
-use objc::{msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
+use objc::{class, msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
 use smallvec::SmallVec;
 use strum::IntoEnumIterator as _;
 
@@ -156,7 +156,84 @@ impl Pasteboard {
         }
     }
 
+    pub fn write_files(
+        &self,
+        paths: &ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        if operation != gpui::FileClipboardOperation::Copy {
+            return Err(gpui::FileClipboardError::Unsupported);
+        }
+        paths.validate_for_clipboard()?;
+        // Cocoa strings cannot losslessly represent non-UTF-8 filesystem paths.
+        let names = paths
+            .paths()
+            .iter()
+            .map(|path| path.to_str().ok_or(gpui::FileClipboardError::InvalidPaths))
+            .collect::<Result<Vec<_>, _>>()?;
+        unsafe {
+            let urls = names
+                .iter()
+                .map(|path| {
+                    let url: id = msg_send![class!(NSURL), fileURLWithPath: ns_string(path)];
+                    url
+                })
+                .collect::<Vec<_>>();
+            let objects = NSArray::arrayWithObjects(nil, &urls);
+            self.inner.clearContents();
+            let written: bool = msg_send![*self.inner, writeObjects: objects];
+            if !written {
+                return Err(gpui::FileClipboardError::Unavailable(
+                    "NSPasteboard rejected file URLs".into(),
+                ));
+            }
+            // Also expose the legacy list used by existing GPUI readers.
+            let strings = names.iter().map(|path| ns_string(path)).collect::<Vec<_>>();
+            let files = NSArray::arrayWithObjects(nil, &strings);
+            if self
+                .inner
+                .setPropertyList_forType(files, NSFilenamesPboardType)
+                == cocoa::base::NO
+            {
+                return Err(gpui::FileClipboardError::Unavailable(
+                    "NSPasteboard rejected filenames".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn write(&self, item: ClipboardItem) {
+        let paths = item
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                _ => None,
+            })
+            .flatten()
+            .cloned()
+            .collect();
+        let paths = ExternalPaths(paths);
+        if !paths.paths().is_empty() {
+            if let Err(error) = self.write_files(&paths, gpui::FileClipboardOperation::Copy) {
+                log::warn!("Failed to write file clipboard: {error}");
+            } else {
+                let mut combined = ClipboardString::new(String::new());
+                for entry in &item.entries {
+                    if let ClipboardEntry::String(string) = entry {
+                        combined.text.push_str(&string.text);
+                        if combined.metadata.is_none() {
+                            combined.metadata = string.metadata.clone();
+                        }
+                    }
+                }
+                if !combined.text.is_empty() {
+                    self.add_plaintext(&combined);
+                }
+            }
+            return;
+        }
         unsafe {
             match item.entries.as_slice() {
                 [] => {
@@ -204,7 +281,12 @@ impl Pasteboard {
     fn write_plaintext(&self, string: &ClipboardString) {
         unsafe {
             self.inner.clearContents();
+        }
+        self.add_plaintext(string);
+    }
 
+    fn add_plaintext(&self, string: &ClipboardString) {
+        unsafe {
             let text_bytes = NSData::dataWithBytes_length_(
                 nil,
                 string.text.as_ptr() as *const c_void,
@@ -368,6 +450,71 @@ mod tests {
                 .inner
                 .setData_forType(bytes, NSPasteboardTypeString);
         }
+    }
+
+    #[test]
+    fn writes_native_file_urls_and_observes_external_replacement() {
+        autoreleasepool(|| {
+            let pasteboard = Pasteboard::unique();
+            let names = [
+                "/tmp/\u{65e5}\u{672c}\u{8a9e} report.txt",
+                "/tmp/emoji-\u{1f4c4}-#%.txt",
+            ];
+            let paths = ExternalPaths(names.iter().map(PathBuf::from).collect());
+            pasteboard
+                .write_files(&paths, gpui::FileClipboardOperation::Copy)
+                .expect("native file write");
+            unsafe {
+                // Inspect the OS pasteboard items directly, bypassing GPUI's reader.
+                let items: id = msg_send![*pasteboard.inner, pasteboardItems];
+                assert_eq!(NSArray::count(items), names.len() as u64);
+                for (index, item) in items.iter().enumerate() {
+                    let value: id = msg_send![item, stringForType: ns_string("public.file-url")];
+                    assert_ne!(value, nil);
+                    let url = CStr::from_ptr(NSString::UTF8String(value))
+                        .to_str()
+                        .expect("UTF-8 URL");
+                    let ns_url: id = msg_send![class!(NSURL), URLWithString: ns_string(url)];
+                    let path: id = msg_send![ns_url, path];
+                    assert_eq!(
+                        CStr::from_ptr(NSString::UTF8String(path))
+                            .to_str()
+                            .expect("UTF-8 path"),
+                        names[index]
+                    );
+                }
+                simulate_external_file_copy(&pasteboard, &["/tmp/replacement.txt"]);
+            }
+            let replaced = pasteboard.read().expect("external files");
+            assert!(
+                matches!(&replaced.entries[0], ClipboardEntry::ExternalPaths(paths) if paths.paths() == [PathBuf::from("/tmp/replacement.txt")])
+            );
+            pasteboard.write(ClipboardItem::new_string("external text".into()));
+            assert_eq!(
+                pasteboard.read(),
+                Some(ClipboardItem::new_string("external text".into()))
+            );
+        });
+    }
+
+    #[test]
+    fn unsupported_move_and_invalid_paths_preserve_pasteboard() {
+        autoreleasepool(|| {
+            let pasteboard = Pasteboard::unique();
+            let original = ClipboardItem::new_string("keep".into());
+            pasteboard.write(original.clone());
+            let paths = ExternalPaths([PathBuf::from("/tmp/file")].into_iter().collect());
+            assert!(matches!(
+                pasteboard.write_files(&paths, gpui::FileClipboardOperation::Move),
+                Err(gpui::FileClipboardError::Unsupported)
+            ));
+            let paths = ExternalPaths([PathBuf::from("relative")].into_iter().collect());
+            assert!(matches!(
+                pasteboard.write_files(&paths, gpui::FileClipboardOperation::Copy),
+                Err(gpui::FileClipboardError::InvalidPaths)
+            ));
+            assert_eq!(pasteboard.read(), Some(original));
+        });
     }
 
     #[test]

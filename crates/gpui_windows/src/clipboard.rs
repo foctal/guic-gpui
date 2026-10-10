@@ -1,10 +1,10 @@
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use anyhow::Result;
 use collections::FxHashMap;
 use itertools::Itertools;
 use windows::Win32::{
-    Foundation::{HANDLE, HGLOBAL},
+    Foundation::{HANDLE, HGLOBAL, HWND},
     System::{
         DataExchange::{
             CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
@@ -78,7 +78,9 @@ pub(crate) fn write_to_clipboard(item: ClipboardItem) {
             match entry {
                 ClipboardEntry::String(string) => write_string(string)?,
                 ClipboardEntry::Image(image) => write_image(image)?,
-                ClipboardEntry::ExternalPaths(_) => {}
+                ClipboardEntry::ExternalPaths(paths) => {
+                    write_files(paths, gpui::FileClipboardOperation::Copy)?
+                }
             }
         }
         Ok(())
@@ -87,6 +89,53 @@ pub(crate) fn write_to_clipboard(item: ClipboardItem) {
     if let Err(e) = result {
         log::error!("Failed to write to clipboard: {e}");
     }
+}
+
+fn encode_hdrop(paths: &ExternalPaths) -> Result<Vec<u8>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    paths.validate_for_clipboard()?;
+    // DROPFILES: pFiles, POINT, fNC, fWide; followed by a double-NUL UTF-16 list.
+    let mut bytes = Vec::new();
+    for value in [20u32, 0, 0, 0, 1] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for path in paths.paths() {
+        for unit in path.as_os_str().encode_wide().chain(Some(0)) {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    Ok(bytes)
+}
+
+/// Writes CF_HDROP and Preferred DropEffect while the clipboard is open.
+fn write_files(paths: &ExternalPaths, operation: gpui::FileClipboardOperation) -> Result<()> {
+    set_clipboard_bytes(&encode_hdrop(paths)?, CF_HDROP.0 as u32)?;
+    let effect: u32 = match operation {
+        gpui::FileClipboardOperation::Copy => 1,
+        gpui::FileClipboardOperation::Move => 2,
+    };
+    let format = unsafe { RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect")) };
+    anyhow::ensure!(format != 0, "Failed to register Preferred DropEffect");
+    set_clipboard_bytes(&[effect], format)?;
+    Ok(())
+}
+
+pub(crate) fn write_files_to_clipboard(
+    owner: HWND,
+    paths: ExternalPaths,
+    operation: gpui::FileClipboardOperation,
+) -> Result<(), gpui::FileClipboardError> {
+    paths.validate_for_clipboard()?;
+    let _guard = ClipboardGuard::open_with_owner(Some(owner))
+        .ok_or_else(|| gpui::FileClipboardError::Unavailable("OpenClipboard failed".into()))?;
+    let result: Result<()> = (|| {
+        unsafe {
+            EmptyClipboard()?;
+        }
+        write_files(&paths, operation)
+    })();
+    result.map_err(|error| gpui::FileClipboardError::Unavailable(error.to_string()))
 }
 
 pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
@@ -178,11 +227,17 @@ fn is_image_format(format: u32) -> bool {
 }
 
 fn write_string(item: &ClipboardString) -> Result<()> {
-    let wide: Vec<u16> = item.text.encode_utf16().chain(Some(0)).collect_vec();
+    // CF_UNICODETEXT is null-terminated, so replace embedded NUL characters with spaces.
+    let text = if item.text.contains('\0') {
+        Cow::Owned(item.text.replace('\0', " "))
+    } else {
+        Cow::Borrowed(item.text.as_str())
+    };
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect_vec();
     set_clipboard_bytes(&wide, CF_UNICODETEXT.0 as u32)?;
 
     if let Some(metadata) = item.metadata.as_ref() {
-        let hash_bytes = ClipboardString::text_hash(&item.text).to_ne_bytes();
+        let hash_bytes = ClipboardString::text_hash(&text).to_ne_bytes();
         set_clipboard_bytes(&hash_bytes, *CLIPBOARD_HASH_FORMAT)?;
 
         let wide: Vec<u16> = metadata.encode_utf16().chain(Some(0)).collect_vec();
@@ -340,7 +395,11 @@ struct ClipboardGuard;
 
 impl ClipboardGuard {
     fn open() -> Option<Self> {
-        match unsafe { OpenClipboard(None) } {
+        Self::open_with_owner(None)
+    }
+
+    fn open_with_owner(owner: Option<HWND>) -> Option<Self> {
+        match unsafe { OpenClipboard(owner) } {
             Ok(()) => Some(Self),
             Err(e) => {
                 log::error!("Failed to open clipboard: {e}");
@@ -417,5 +476,33 @@ mod tests {
             assert_eq!(decoded.dimensions(), (1, 1));
             assert_eq!(decoded.get_pixel(0, 0).0, [0xcc, 0x66, 0x33]);
         }
+    }
+}
+
+#[cfg(test)]
+mod file_clipboard_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn hdrop_contains_wide_multiple_unicode_paths_and_double_terminator() {
+        let names = [
+            "C:\\files\\report \u{65e5}\u{672c}.txt",
+            "C:\\files\\emoji-\u{1f4c4}.txt",
+        ];
+        let paths = ExternalPaths(names.iter().map(PathBuf::from).collect());
+        let encoded = encode_hdrop(&paths).expect("valid Windows paths");
+        let header: Vec<_> = encoded[..20]
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(header, [20, 0, 0, 0, 1]);
+        let words: Vec<_> = encoded[20..]
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(&words[words.len() - 2..], &[0, 0]);
+        let expected = format!("{}\0{}\0\0", names[0], names[1]);
+        assert_eq!(String::from_utf16(&words).expect("valid UTF-16"), expected);
     }
 }

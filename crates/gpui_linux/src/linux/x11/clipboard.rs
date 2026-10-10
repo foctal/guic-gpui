@@ -78,7 +78,9 @@ x11rb::atom_manager! {
         TEXT_MIME_UNKNOWN: b"text/plain",
 
         // HTML: b"text/html",
-        // URI_LIST: b"text/uri-list",
+        URI_LIST: b"text/uri-list",
+        GNOME_FILES: b"x-special/gnome-copied-files",
+        KDE_CUT: b"application/x-kde-cutselection",
 
         PNG__MIME: ImageFormat::mime_type(ImageFormat::Png ).as_bytes(),
         JPEG_MIME: ImageFormat::mime_type(ImageFormat::Jpeg).as_bytes(),
@@ -977,6 +979,41 @@ impl Clipboard {
         Ok(Self { inner: ctx })
     }
 
+    pub(crate) fn set_files(
+        &self,
+        paths: &gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> std::result::Result<(), gpui::FileClipboardError> {
+        let data = vec![
+            ClipboardData {
+                bytes: paths.clipboard_uri_list()?.into_bytes(),
+                format: self.inner.atoms.URI_LIST,
+            },
+            ClipboardData {
+                bytes: paths.clipboard_gnome_files(operation)?.into_bytes(),
+                format: self.inner.atoms.GNOME_FILES,
+            },
+            ClipboardData {
+                bytes: if operation == gpui::FileClipboardOperation::Move {
+                    b"1"
+                } else {
+                    b"0"
+                }
+                .to_vec(),
+                format: self.inner.atoms.KDE_CUT,
+            },
+        ];
+        self.inner
+            .write(data, ClipboardKind::Clipboard, WaitConfig::None)
+            .map_err(|error| gpui::FileClipboardError::Unavailable(error.to_string()))?;
+        if !self.is_owner(ClipboardKind::Clipboard) {
+            return Err(gpui::FileClipboardError::Unavailable(
+                "X11 selection ownership was not acquired".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_text(
         &self,
         message: Cow<'_, str>,
@@ -1070,6 +1107,96 @@ impl Clipboard {
 
     pub fn is_owner(&self, selection: ClipboardKind) -> bool {
         self.inner.is_owner(selection).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{ExternalPaths, FileClipboardError, FileClipboardOperation};
+
+    #[test]
+    #[ignore = "requires an isolated X11 server; run under xvfb-run"]
+    fn native_file_clipboard_round_trip() {
+        let clipboard = Clipboard::new().unwrap();
+        // This client has its own X11 connections and requests actual selection
+        // conversions, so these assertions cannot pass via GPUI's cached item.
+        let external = x11_clipboard::Clipboard::new().unwrap();
+        let target_reader = XContext::new().unwrap();
+        let atoms = &external.getter.atoms;
+        let read = |target| {
+            external
+                .load(
+                    atoms.clipboard,
+                    target,
+                    atoms.property,
+                    Duration::from_secs(5),
+                )
+                .unwrap()
+        };
+        let uri_atom = external.getter.get_atom("text/uri-list").unwrap();
+        let gnome_atom = external
+            .getter
+            .get_atom("x-special/gnome-copied-files")
+            .unwrap();
+        let kde_atom = external
+            .getter
+            .get_atom("application/x-kde-cutselection")
+            .unwrap();
+        let paths = ExternalPaths(
+            ["/tmp/日本語 #%.txt", "/tmp/second\nfile"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+        let uris = b"file:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\r\nfile:///tmp/second%0Afile\r\n";
+
+        for (operation, verb, cut) in [
+            (FileClipboardOperation::Copy, "copy", b"0"),
+            (FileClipboardOperation::Move, "cut", b"1"),
+        ] {
+            clipboard.set_files(&paths, operation).unwrap();
+            // TARGETS replies have type ATOM, which x11-clipboard's generic
+            // load API rejects. Request this conversion on a separate window.
+            let targets = clipboard
+                .inner
+                .read_single(&target_reader, ClipboardKind::Clipboard, atoms.targets)
+                .unwrap();
+            assert_eq!(targets.format, clipboard.inner.atoms.ATOM);
+            let targets = Inner::parse_formats(&targets.bytes);
+            for target in [uri_atom, gnome_atom, kde_atom] {
+                assert!(targets.contains(&target));
+            }
+            assert_eq!(read(uri_atom), uris);
+            assert_eq!(
+                read(gnome_atom),
+                format!("{verb}\nfile:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\nfile:///tmp/second%0Afile").as_bytes()
+            );
+            assert_eq!(read(kde_atom), cut);
+
+            for names in [vec![], vec!["relative"], vec!["/tmp/nul\0file"]] {
+                let invalid = ExternalPaths(names.into_iter().map(Into::into).collect());
+                assert!(matches!(
+                    clipboard.set_files(&invalid, FileClipboardOperation::Copy),
+                    Err(FileClipboardError::InvalidPaths)
+                ));
+                assert_eq!(read(uri_atom), uris);
+                assert_eq!(read(kde_atom), cut);
+            }
+
+            external
+                .store(atoms.clipboard, atoms.utf8_string, "replacement")
+                .unwrap();
+            assert!(!clipboard.is_owner(ClipboardKind::Clipboard));
+            assert_eq!(
+                clipboard
+                    .get_any(ClipboardKind::Clipboard)
+                    .unwrap()
+                    .text()
+                    .as_deref(),
+                Some("replacement")
+            );
+        }
     }
 }
 

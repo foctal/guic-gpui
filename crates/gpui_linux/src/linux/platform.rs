@@ -89,6 +89,17 @@ pub(crate) trait LinuxClient {
     fn reveal_path(&self, path: PathBuf);
     fn write_to_primary(&self, item: ClipboardItem);
     fn write_to_clipboard(&self, item: ClipboardItem);
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        false
+    }
+    fn write_files_to_clipboard(
+        &self,
+        _paths: gpui::ExternalPaths,
+        _operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        Err(gpui::FileClipboardError::Unsupported)
+    }
+
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
@@ -733,6 +744,18 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
         self.inner.write_to_primary(item)
     }
 
+    fn supports_file_clipboard(&self, operation: gpui::FileClipboardOperation) -> bool {
+        self.inner.supports_file_clipboard(operation)
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        self.inner.write_files_to_clipboard(paths, operation)
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
         self.inner.write_to_clipboard(item)
     }
@@ -834,9 +857,13 @@ pub(super) fn is_within_click_distance(a: Point<Pixels>, b: Point<Pixels>) -> bo
     diff.x.abs() <= DOUBLE_CLICK_DISTANCE && diff.y.abs() <= DOUBLE_CLICK_DISTANCE
 }
 
+/// Creates an XKB context for keymaps supplied by Wayland or X11.
+///
+/// Server keymaps are already resolved and need no local keyboard definitions.
+/// Loading default include paths can fail on systems without those files.
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn new_xkb_context() -> anyhow::Result<xkb::Context> {
-    validate_xkb_context(xkb::Context::new(xkb::CONTEXT_NO_FLAGS))
+    validate_xkb_context(xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES))
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1259,6 +1286,35 @@ pub(super) fn compositor_gpu_hint_from_dev_t(dev: u64) -> Option<gpui_wgpu::Comp
 mod tests {
     use super::*;
     use gpui::{Point, px};
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn loads_resolved_keymap_without_local_include_paths() {
+        // Model the compositor/server resolving its own keyboard definitions.
+        let server_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let server_keymap = xkb::Keymap::new_from_names(
+            &server_context,
+            "",
+            "pc105",
+            "us",
+            "",
+            None,
+            xkb::COMPILE_NO_FLAGS,
+        )
+        .expect("server keymap should compile");
+
+        let context = new_xkb_context().unwrap();
+        assert_eq!(context.include_paths().count(), 0);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            server_keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::COMPILE_NO_FLAGS,
+        )
+        .expect("resolved server keymap should not need local includes");
+        let state = xkb::State::new(&keymap);
+        assert_eq!(state.key_get_utf8(keymap.key_by_name("AD01").unwrap()), "q");
+    }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     #[test]

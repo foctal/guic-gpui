@@ -1174,7 +1174,69 @@ impl LinuxClient for WaylandClient {
         }
     }
 
+    fn supports_file_clipboard(&self, _operation: gpui::FileClipboardOperation) -> bool {
+        let state = self.0.borrow();
+        state.globals.data_device_manager.is_some() && state.data_device.is_some()
+    }
+
+    fn write_files_to_clipboard(
+        &self,
+        paths: gpui::ExternalPaths,
+        operation: gpui::FileClipboardOperation,
+    ) -> Result<(), gpui::FileClipboardError> {
+        paths.clipboard_uri_list()?;
+        let mut state = self.0.borrow_mut();
+        let (Some(manager), Some(device)) = (
+            state.globals.data_device_manager.clone(),
+            state.data_device.clone(),
+        ) else {
+            return Err(gpui::FileClipboardError::Unsupported);
+        };
+        if state.mouse_focused_window.is_none() && state.keyboard_focused_window.is_none() {
+            return Err(gpui::FileClipboardError::Unavailable(
+                "Wayland requires an input-focused window".into(),
+            ));
+        }
+        let serial = state.serial_tracker.selection_serial().ok_or_else(|| {
+            gpui::FileClipboardError::Unavailable(
+                "Wayland requires a keyboard or pointer press serial".into(),
+            )
+        })?;
+        let source = manager.create_data_source(&state.globals.qh, DataSourceKind::Clipboard);
+        for mime in [
+            FILE_LIST_MIME_TYPE,
+            "x-special/gnome-copied-files",
+            "application/x-kde-cutselection",
+        ] {
+            source.offer(mime.to_string());
+        }
+        source.offer(state.clipboard.self_mime());
+        state.clipboard.set_files(paths, operation);
+        device.set_selection(Some(&source), serial.as_raw());
+        Ok(())
+    }
+
     fn write_to_clipboard(&self, item: gpui::ClipboardItem) {
+        let paths = gpui::ExternalPaths(
+            item.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    gpui::ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect(),
+        );
+        if !paths.paths().is_empty() {
+            if let Err(error) =
+                self.write_files_to_clipboard(paths, gpui::FileClipboardOperation::Copy)
+            {
+                log::warn!("Failed to write file clipboard: {error}");
+            }
+            return;
+        }
+
         let mut state = self.0.borrow_mut();
         let (Some(data_device_manager), Some(data_device)) = (
             state.globals.data_device_manager.clone(),
@@ -2847,6 +2909,55 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn file_clipboard_sends_each_mime_and_resets_intent_for_text() {
+        use gpui::{ClipboardItem, ExternalPaths, FileClipboardOperation};
+        use std::{io::Read, os::unix::net::UnixStream};
+
+        // Sending clipboard data only needs a writable fd and the event loop;
+        // no compositor or selection ownership is involved in this unit test.
+        let (socket, _server) = UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let mut event_loop = EventLoop::try_new().unwrap();
+        let mut clipboard = Clipboard::new(connection, event_loop.handle());
+        let mut state = WaylandClientStatePtr(Weak::new());
+        let mut receive = |clipboard: &Clipboard, mime: &str| {
+            let (mut reader, writer) = UnixStream::pair().unwrap();
+            reader
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            clipboard.send(mime.into(), writer.into());
+            event_loop
+                .dispatch(Duration::from_millis(100), &mut state)
+                .unwrap();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+        let paths = ExternalPaths(smallvec::smallvec![
+            "/tmp/日本語 #%.txt".into(),
+            "/tmp/second\nfile".into(),
+        ]);
+        for (operation, verb, cut) in [
+            (FileClipboardOperation::Copy, "copy", b"0"),
+            (FileClipboardOperation::Move, "cut", b"1"),
+        ] {
+            clipboard.set_files(paths.clone(), operation);
+            assert_eq!(
+                receive(&clipboard, FILE_LIST_MIME_TYPE),
+                b"file:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\r\nfile:///tmp/second%0Afile\r\n"
+            );
+            assert_eq!(
+                receive(&clipboard, "x-special/gnome-copied-files"),
+                format!("{verb}\nfile:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\nfile:///tmp/second%0Afile").as_bytes()
+            );
+            assert_eq!(receive(&clipboard, "application/x-kde-cutselection"), cut);
+            assert!(receive(&clipboard, "unsupported/mime").is_empty());
+        }
+        clipboard.set(ClipboardItem::new_string("replacement".into()));
+        assert_eq!(receive(&clipboard, TEXT_MIME_TYPES[0]), b"replacement");
+    }
 
     #[test]
     fn wayland_errors_use_logger_when_stderr_is_unwritable() {

@@ -743,7 +743,10 @@ impl Bounds<Pixels> {
             .or_else(|| cx.primary_display());
 
         display
-            .map(|display| Bounds::centered_at(display.bounds().center(), size))
+            .map(|display| {
+                let visible_bounds = display.visible_bounds();
+                Bounds::centered_at(visible_bounds.center(), size.min(&visible_bounds.size))
+            })
             .unwrap_or_else(|| Bounds {
                 origin: point(px(0.), px(0.)),
                 size,
@@ -3971,6 +3974,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[crate::test]
+    fn test_centered_window_is_clamped_to_display(cx: &mut crate::TestAppContext) {
+        cx.update(|cx| {
+            let display = cx.primary_display().unwrap();
+            let visible = display.visible_bounds();
+            assert_eq!(
+                Bounds::centered(
+                    None,
+                    size(visible.size.width * 2., visible.size.height * 2.),
+                    cx
+                ),
+                visible
+            );
+            let small = visible.size / 2.;
+            assert_eq!(
+                Bounds::centered(Some(display.id()), small, cx),
+                Bounds::centered_at(visible.center(), small)
+            );
+            assert_eq!(
+                Bounds::centered(Some(DisplayId(u64::MAX)), small, cx),
+                Bounds::centered_at(visible.center(), small)
+            );
+        });
+    }
 
     #[test]
     fn test_bounds_intersects() {
