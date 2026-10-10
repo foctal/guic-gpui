@@ -44,10 +44,20 @@ unique OS pasteboard and inspect its native items directly; they do not depend
 on an in-process clipboard cache. Replacement by externally serialized data is
 also covered.
 
+Windows native tests exercise the headless platform's clipboard owner, read back
+multiple Unicode paths through CF_HDROP, inspect Preferred DropEffect for copy
+and move, and verify that invalid writes preserve the existing contents. They
+also cover legacy file writes and replacement by a separate text writer. These
+checks run within the existing text clipboard test to avoid competing test
+owners. Run them on Windows with:
+
+```sh
+cargo test -p guic-gpui-windows --features test-support --lib platform::tests::test_clipboard --locked
+```
+
 Before release, verify actual file-manager paste with Finder, Explorer,
 Nautilus and Dolphin (X11 and Wayland), including multiple Unicode paths,
 copy/move behavior, clipboard replacement by another application, and missing
 Wayland input focus/serial. Native file-manager interoperability is not implied
-by serialization or in-process tests. Windows/Linux native execution remains
-required; the macOS host used for the integration audit lacks a Linux cross C
-compiler and a Windows target environment.
+by serialization or in-process tests. Native validation must run on each target
+platform; cross-compilation alone does not validate clipboard interoperability.
