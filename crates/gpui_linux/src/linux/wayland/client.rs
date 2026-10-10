@@ -2911,6 +2911,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_clipboard_sends_each_mime_and_resets_intent_for_text() {
+        use gpui::{ClipboardItem, ExternalPaths, FileClipboardOperation};
+        use std::{io::Read, os::unix::net::UnixStream};
+
+        // Sending clipboard data only needs a writable fd and the event loop;
+        // no compositor or selection ownership is involved in this unit test.
+        let (socket, _server) = UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let mut event_loop = EventLoop::try_new().unwrap();
+        let mut clipboard = Clipboard::new(connection, event_loop.handle());
+        let mut state = WaylandClientStatePtr(Weak::new());
+        let mut receive = |clipboard: &Clipboard, mime: &str| {
+            let (mut reader, writer) = UnixStream::pair().unwrap();
+            reader
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            clipboard.send(mime.into(), writer.into());
+            event_loop
+                .dispatch(Duration::from_millis(100), &mut state)
+                .unwrap();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+        let paths = ExternalPaths(smallvec::smallvec![
+            "/tmp/日本語 #%.txt".into(),
+            "/tmp/second\nfile".into(),
+        ]);
+        for (operation, verb, cut) in [
+            (FileClipboardOperation::Copy, "copy", b"0"),
+            (FileClipboardOperation::Move, "cut", b"1"),
+        ] {
+            clipboard.set_files(paths.clone(), operation);
+            assert_eq!(
+                receive(&clipboard, FILE_LIST_MIME_TYPE),
+                b"file:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\r\nfile:///tmp/second%0Afile\r\n"
+            );
+            assert_eq!(
+                receive(&clipboard, "x-special/gnome-copied-files"),
+                format!("{verb}\nfile:///tmp/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%23%25.txt\nfile:///tmp/second%0Afile").as_bytes()
+            );
+            assert_eq!(receive(&clipboard, "application/x-kde-cutselection"), cut);
+            assert!(receive(&clipboard, "unsupported/mime").is_empty());
+        }
+        clipboard.set(ClipboardItem::new_string("replacement".into()));
+        assert_eq!(receive(&clipboard, TEXT_MIME_TYPES[0]), b"replacement");
+    }
+
+    #[test]
     fn wayland_errors_use_logger_when_stderr_is_unwritable() {
         const CHILD_ENV: &str = "GUIC_WAYLAND_ERROR_LOG_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {

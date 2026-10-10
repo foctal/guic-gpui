@@ -55,6 +55,20 @@ owners. Run them on Windows with:
 cargo test -p guic-gpui-windows --features test-support --lib platform::tests::test_clipboard --locked
 ```
 
+Linux tests cover Wayland MIME payload delivery through file descriptors,
+including copy/move intent and replacement with text. The native X11 test uses
+a separate client connection to request all three file formats, checks that
+invalid writes preserve the selection, and replaces it with an external text
+selection. Run it on an isolated X server because it changes the clipboard:
+
+```sh
+cargo test -p guic-gpui-linux --features test-support --lib --locked
+xvfb-run -a cargo test -p guic-gpui-linux --features test-support --lib native_file_clipboard_round_trip --locked -- --ignored
+```
+
+The Wayland payload test does not exercise compositor selection policy, focus,
+or input serials; those still require native validation below.
+
 Before release, verify actual file-manager paste with Finder, Explorer,
 Nautilus and Dolphin (X11 and Wayland), including multiple Unicode paths,
 copy/move behavior, clipboard replacement by another application, and missing
