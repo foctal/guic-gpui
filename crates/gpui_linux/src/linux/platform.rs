@@ -1289,6 +1289,35 @@ mod tests {
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     #[test]
+    fn loads_resolved_keymap_without_local_include_paths() {
+        // Model the compositor/server resolving its own keyboard definitions.
+        let server_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let server_keymap = xkb::Keymap::new_from_names(
+            &server_context,
+            "",
+            "pc105",
+            "us",
+            "",
+            None,
+            xkb::COMPILE_NO_FLAGS,
+        )
+        .expect("server keymap should compile");
+
+        let context = new_xkb_context().unwrap();
+        assert_eq!(context.include_paths().count(), 0);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            server_keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::COMPILE_NO_FLAGS,
+        )
+        .expect("resolved server keymap should not need local includes");
+        let state = xkb::State::new(&keymap);
+        assert_eq!(state.key_get_utf8(keymap.key_by_name("AD01").unwrap()), "q");
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
     fn rejects_null_xkb_context() {
         let context = unsafe {
             // libxkbcommon permits unref on null, matching the value returned by Context::new on failure.
