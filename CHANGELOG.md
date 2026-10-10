@@ -4,6 +4,8 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
+## [0.4.0] - 2026-10-10
+
 - Avoid a panic when hit testing beyond a wrapped line's measured width and keep
   closing punctuation attached to the preceding word when wrapping.
 - Exclude disabled key bindings from next-keystroke suggestions.
