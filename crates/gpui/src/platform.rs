@@ -1644,12 +1644,12 @@ impl PlatformInputHandler {
     }
 }
 
-/// A struct representing a selection in a text buffer, in UTF16 characters.
+/// A struct representing a selection in a text buffer, in UTF-16 code units.
 /// This is different from a range because the head may be before the tail.
 #[derive(Debug)]
 pub struct UTF16Selection {
     /// The range of text in the document this selection corresponds to
-    /// in UTF16 characters.
+    /// in UTF-16 code units.
     pub range: Range<usize>,
     /// Whether the head of this selection is at the start (true), or end (false)
     /// of the range
@@ -1664,7 +1664,7 @@ pub trait InputHandler: 'static {
     /// Get the range of the user's currently selected text, if any
     /// Corresponds to [selectedRange()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438242-selectedrange)
     ///
-    /// Return value is in terms of UTF-16 characters, from 0 to the length of the document
+    /// Return value is in terms of UTF-16 code units, from 0 to the length of the document
     fn selected_text_range(
         &mut self,
         ignore_disabled_input: bool,
@@ -1675,13 +1675,13 @@ pub trait InputHandler: 'static {
     /// Get the range of the currently marked text, if any
     /// Corresponds to [markedRange()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438250-markedrange)
     ///
-    /// Return value is in terms of UTF-16 characters, from 0 to the length of the document
+    /// Return value is in terms of UTF-16 code units, from 0 to the length of the document
     fn marked_text_range(&mut self, window: &mut Window, cx: &mut App) -> Option<Range<usize>>;
 
-    /// Get the text for the given document range in UTF-16 characters
+    /// Get the text for the given document range in UTF-16 code units
     /// Corresponds to [attributedSubstring(forProposedRange: actualRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438238-attributedsubstring)
     ///
-    /// range_utf16 is in terms of UTF-16 characters
+    /// range_utf16 is in terms of UTF-16 code units
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -1693,7 +1693,7 @@ pub trait InputHandler: 'static {
     /// Replace the text in the given document range with the given text
     /// Corresponds to [insertText(_:replacementRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438258-inserttext)
     ///
-    /// replacement_range is in terms of UTF-16 characters
+    /// replacement_range is in terms of UTF-16 code units
     fn replace_text_in_range(
         &mut self,
         replacement_range: Option<Range<usize>>,
@@ -1706,8 +1706,8 @@ pub trait InputHandler: 'static {
     /// and mark the given text as part of an IME 'composing' state
     /// Corresponds to [setMarkedText(_:selectedRange:replacementRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438246-setmarkedtext)
     ///
-    /// range_utf16 is in terms of UTF-16 characters
-    /// new_selected_range is in terms of UTF-16 characters
+    /// range_utf16 is in terms of UTF-16 code units
+    /// new_selected_range is relative to the beginning of new_text, in UTF-16 code units.
     fn replace_and_mark_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -1721,7 +1721,9 @@ pub trait InputHandler: 'static {
     /// Corresponds to [unmarkText()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438239-unmarktext)
     fn unmark_text(&mut self, window: &mut Window, cx: &mut App);
 
-    /// Get the bounds of the given document range in screen coordinates
+    /// Get the bounds of the given document range in window-local logical pixels.
+    /// The origin is the top-left of the window content area; the platform bridge
+    /// converts to native screen coordinates or device pixels as required.
     /// Corresponds to [firstRect(forCharacterRange:actualRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438240-firstrect)
     ///
     /// This is used for positioning the IME candidate window
@@ -1732,7 +1734,8 @@ pub trait InputHandler: 'static {
         cx: &mut App,
     ) -> Option<Bounds<Pixels>>;
 
-    /// Get the character offset for the given point in terms of UTF16 characters
+    /// Get the document offset for the given point in UTF-16 code units.
+    /// The point is in window-local logical pixels, like [`Self::bounds_for_range`].
     ///
     /// Corresponds to [characterIndexForPoint:](https://developer.apple.com/documentation/appkit/nstextinputclient/characterindex(for:))
     fn character_index_for_point(
@@ -1750,7 +1753,7 @@ pub trait InputHandler: 'static {
     /// invokes Select All from system UI (iOS `UITextInput setSelectedTextRange:`,
     /// Android `InputConnection.setSelection`).
     ///
-    /// range_utf16 is in terms of UTF-16 characters, from 0 to the length of the document
+    /// range_utf16 is in terms of UTF-16 code units, from 0 to the length of the document
     fn set_selected_text_range(
         &mut self,
         _range_utf16: Range<usize>,
@@ -1769,7 +1772,7 @@ pub trait InputHandler: 'static {
         None
     }
 
-    /// Get the length of the document in UTF-16 characters, if known.
+    /// Get the length of the document in UTF-16 code units, if known.
     fn text_length_utf16(&mut self, _window: &mut Window, _cx: &mut App) -> Option<usize> {
         None
     }
