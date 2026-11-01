@@ -4,6 +4,16 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
+- Keep the element arena in a separate allocation to avoid aliasing it through
+  a raw pointer while the application is mutably borrowed.
+- Release pooled text line wrappers without retaining the text system in a
+  reference cycle.
+- Defer native window-close cleanup to avoid reentrant application borrows.
+- Redraw cached views when inherited opacity changes, including hover styles.
+- Clarify UTF-16 input range units, window-local input geometry, and frame-scoped
+  input-handler registration.
+- Add regression coverage for bordered scroll panes at fractional display scales.
+
 ## [0.4.0] - 2026-10-10
 
 - Avoid a panic when hit testing beyond a wrapped line's measured width and keep
