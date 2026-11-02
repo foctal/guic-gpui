@@ -419,10 +419,10 @@ impl ArenaClearNeeded {
     /// reference.
     pub fn clear(self, cx: &mut App) {
         assert!(
-            std::ptr::eq(self.arena, &cx.element_arena),
+            std::ptr::eq(self.arena, &*cx.element_arena),
             "ArenaClearNeeded::clear called with a different App than the draw ran against"
         );
-        cx.element_arena.borrow_mut().clear();
+        RefCell::borrow_mut(&cx.element_arena).clear();
     }
 }
 
@@ -1556,12 +1556,22 @@ impl Window {
 
         platform_window.on_close(Box::new({
             let window_id = handle.window_id();
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move || {
-                let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
-                let _ = cx.update(|cx| {
-                    SystemWindowTabController::remove_tab(cx, window_id);
-                });
+                // Native destruction can re-enter while the app is borrowed.
+                // Schedule both operations without borrowing the app here.
+                cx.spawn(async move |cx| {
+                    cx.update(|cx| {
+                        // App-driven closure may already have removed the window.
+                        if cx.windows.contains_key(window_id) {
+                            handle
+                                .update(cx, |_, window, _| window.remove_window())
+                                .log_err();
+                        }
+                        SystemWindowTabController::remove_tab(cx, window_id);
+                    });
+                })
+                .detach();
             }
         }));
         platform_window.on_request_frame(Box::new({
@@ -6820,6 +6830,242 @@ mod tests {
         Styled, TestAppContext, Window, WindowAppearance, WindowOptions, canvas, div, point, px,
         size,
     };
+
+    #[gpui::test]
+    fn test_native_close_defers_app_access(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| crate::EmptyView);
+        let platform_window = cx.test_window(window.into());
+        {
+            let app = cx.app.borrow_mut();
+            platform_window.simulate_close();
+            assert!(app.windows.contains_key(window.window_id()));
+        }
+        cx.run_until_parked();
+        assert!(!cx.app.borrow().windows.contains_key(window.window_id()));
+    }
+
+    #[gpui::test]
+    fn cached_view_follows_inherited_opacity(cx: &mut TestAppContext) {
+        struct Child {
+            renders: usize,
+        }
+
+        impl Render for Child {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.renders += 1;
+                div().size_full().bg(crate::rgb(0xff0000))
+            }
+        }
+
+        struct Root {
+            opacity: f32,
+            width: Pixels,
+            child: crate::Entity<Child>,
+        }
+
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(self.width)
+                    .h(px(200.))
+                    .opacity(self.opacity)
+                    .hover(|style| style.opacity(1.))
+                    .child(
+                        self.child
+                            .clone()
+                            .cached(crate::StyleRefinement::default().size(px(100.))),
+                    )
+            }
+        }
+
+        /// Updates the root, draws until no more frames are requested, and returns the
+        /// child's painted alpha and how many times it has rendered.
+        fn update_and_draw(
+            window: crate::WindowHandle<Root>,
+            child: &crate::Entity<Child>,
+            cx: &mut TestAppContext,
+            update: impl FnOnce(&mut Root, &mut Window, &mut Context<Root>),
+        ) -> (f32, usize) {
+            window
+                .update(cx, |root, window, cx| {
+                    update(root, window, cx);
+                    cx.notify();
+                })
+                .expect("update root");
+            for _ in 0..3 {
+                let (alpha, renders, requested_frames) = cx
+                    .update_window(window.into(), |_, window, cx| {
+                        window.draw(cx).clear(cx);
+                        let quads = &window.rendered_frame.scene.quads;
+                        assert_eq!(quads.len(), 1);
+                        let alpha = quads.first().expect("child quad").background.solid.a;
+                        (
+                            alpha,
+                            child.read(cx).renders,
+                            window.simulate_next_frame(cx),
+                        )
+                    })
+                    .expect("draw window");
+                if requested_frames == 0 {
+                    return (alpha, renders);
+                }
+            }
+            panic!("cached child kept requesting frames");
+        }
+
+        let child = cx.new(|_| Child { renders: 0 });
+        let window = cx.add_window(|_, _| Root {
+            opacity: 1.,
+            width: px(200.),
+            child: child.clone(),
+        });
+        let outside = point(px(500.), px(500.));
+        let inside = point(px(50.), px(50.));
+        let beside = point(px(250.), px(50.));
+
+        // Changing the wrapper's opacity redraws the child; unchanged opacity reuses it.
+        let move_outside = |_: &mut Root, window: &mut Window, cx: &mut Context<Root>| {
+            window.simulate_mouse_move(outside, cx)
+        };
+        assert_eq!(update_and_draw(window, &child, cx, move_outside), (1., 1));
+        assert_eq!(update_and_draw(window, &child, cx, |_, _, _| {}), (1., 1));
+        let fade = |root: &mut Root, _: &mut Window, _: &mut Context<Root>| root.opacity = 0.5;
+        assert_eq!(update_and_draw(window, &child, cx, fade), (0.5, 2));
+        assert_eq!(update_and_draw(window, &child, cx, |_, _, _| {}), (0.5, 2));
+
+        // Hover opacity applies when the mouse enters and leaves.
+        let move_inside = |_: &mut Root, window: &mut Window, cx: &mut Context<Root>| {
+            window.simulate_mouse_move(inside, cx)
+        };
+        assert_eq!(update_and_draw(window, &child, cx, move_inside).0, 1.);
+        let move_beside = |_: &mut Root, window: &mut Window, cx: &mut Context<Root>| {
+            window.simulate_mouse_move(beside, cx)
+        };
+        assert_eq!(update_and_draw(window, &child, cx, move_beside).0, 0.5);
+
+        // Widening the wrapper puts it under a still mouse, so only paint's hit test sees
+        // the hover.
+        let widen = |root: &mut Root, _: &mut Window, _: &mut Context<Root>| root.width = px(300.);
+        assert_eq!(update_and_draw(window, &child, cx, widen).0, 1.);
+    }
+    #[gpui::test]
+    fn bordered_scroll_panes_preserve_bounds_at_fractional_scales(cx: &mut TestAppContext) {
+        struct Panes {
+            scroll: [crate::ScrollHandle; 2],
+        }
+        impl Render for Panes {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_h_0()
+                            .children((0..2).map(|index| {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .border_1()
+                                    .border_color(crate::rgb(0xffcc00))
+                                    .bg(crate::rgb(0x18202a))
+                                    .child(
+                                        div().h(px(32.5)).flex_shrink_0().bg(crate::rgb(0x00ff00)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(index)
+                                            .flex_1()
+                                            .min_h_0()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.scroll[index])
+                                            .child(div().h(px(2400.25)).bg(crate::rgb(0xff0000))),
+                                    )
+                            })),
+                    )
+                    .child(div().h(px(40.5)).flex_shrink_0().bg(crate::rgb(0x0000ff)))
+            }
+        }
+        let scroll = [crate::ScrollHandle::new(), crate::ScrollHandle::new()];
+        let handle = cx.add_window(|_, _| Panes {
+            scroll: scroll.clone(),
+        });
+        for scale in [1., 1.25, 1.5, 2.] {
+            cx.simulate_window_scale_factor_change(handle.into(), scale);
+            for viewport in [size(px(800.), px(600.)), size(px(641.5), px(481.25))] {
+                cx.simulate_window_resize(handle.into(), viewport);
+                for offset in [0., -180.25] {
+                    scroll[0].set_offset(point(px(0.), px(offset)));
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                        let quads = &window.rendered_frame.scene.quads;
+                        let strips: Vec<_> = quads
+                            .iter()
+                            .filter(|q| q.border_color == crate::rgb(0xffcc00).into())
+                            .collect();
+                        assert_eq!(strips.len(), 8);
+                        let borders: Vec<_> = strips
+                            .chunks_exact(4)
+                            .map(|group| {
+                                let mut border = *group[0];
+                                for strip in &group[1..] {
+                                    assert_eq!(strip.bounds, border.bounds);
+                                    border.content_mask.bounds = border
+                                        .content_mask
+                                        .bounds
+                                        .union(&strip.content_mask.bounds);
+                                }
+                                border
+                            })
+                            .collect();
+                        let bodies: Vec<_> = quads
+                            .iter()
+                            .filter(|q| q.background.solid == crate::rgb(0xff0000).into())
+                            .collect();
+                        let footer = quads
+                            .iter()
+                            .find(|q| q.background.solid == crate::rgb(0x0000ff).into())
+                            .unwrap();
+                        assert_eq!(borders.len(), 2);
+                        assert_eq!(bodies.len(), 2);
+                        assert_eq!(borders[0].bounds.top(), borders[1].bounds.top());
+                        assert_eq!(borders[0].bounds.bottom(), borders[1].bounds.bottom());
+                        assert_eq!(borders[0].bounds.right(), borders[1].bounds.left());
+                        assert_eq!(borders[0].bounds.bottom(), footer.bounds.top());
+                        for (border, body) in borders.iter().zip(&bodies) {
+                            assert!(border.content_mask.bounds.contains(&border.bounds.origin));
+                            assert!(border.content_mask.bounds.bottom() >= border.bounds.bottom());
+                            // Masks round outward; compare the actual visible body, not
+                            // unused pixels admitted by a conservative scissor rectangle.
+                            let visible_body = body.bounds.intersect(&body.content_mask.bounds);
+                            assert!(
+                                visible_body.bottom()
+                                    <= border.bounds.bottom() - border.border_widths.bottom
+                            );
+                            assert!(
+                                visible_body.left()
+                                    >= border.bounds.left() + border.border_widths.left
+                            );
+                            assert!(
+                                visible_body.right()
+                                    <= border.bounds.right() - border.border_widths.right
+                            );
+                        }
+                    })
+                    .unwrap();
+                    assert!(scroll[0].max_offset().y > px(0.));
+                    assert!(scroll[1].max_offset().y > px(0.));
+                    assert_eq!(scroll[1].offset().y, px(0.));
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_scale_factor_change_preserves_bounds_and_survives_resize() {

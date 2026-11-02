@@ -6,6 +6,13 @@ use std::ops::Range;
 /// Once your view implements this trait, you can use it to construct an [`ElementInputHandler<V>`].
 /// This input handler can then be assigned during paint by calling [`Window::handle_input`].
 ///
+/// All text offsets and ranges use UTF-16 code units, not UTF-8 bytes or graphemes.
+/// Geometry uses window-local logical pixels, including `element_bounds`.
+/// Registration is frame-scoped: [`Window::handle_input`] installs the handler
+/// for the focused element during paint. Replacing a handler does not itself
+/// call `unmark_text` or synthesize a commit. Consumers must not rely on a
+/// focus change alone to finalize their composition state; native IME lifecycle
+/// callbacks and application focus policy must be considered together.
 /// See [`InputHandler`] for details on how to implement each method.
 pub trait EntityInputHandler: 'static + Sized {
     /// See [`InputHandler::text_for_range`] for details
