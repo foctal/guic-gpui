@@ -1266,6 +1266,11 @@ impl LinuxClient for WaylandClient {
         self.0.borrow_mut().clipboard.read_primary()
     }
 
+    fn read_text_from_clipboard_async(&self) -> gpui::Task<Option<String>> {
+        let executor = self.with_common(|c| c.background_executor.clone());
+        self.0.borrow().clipboard.read_text_async(&executor)
+    }
+
     fn read_from_clipboard(&self) -> Option<gpui::ClipboardItem> {
         self.0.borrow_mut().clipboard.read()
     }

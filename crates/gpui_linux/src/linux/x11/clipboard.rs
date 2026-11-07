@@ -947,6 +947,7 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Clipboard {
     inner: Arc<Inner>,
 }
@@ -1056,6 +1057,26 @@ impl Clipboard {
         self.inner.write(data, selection, wait)
     }
 
+    pub(crate) fn get_text(&self) -> Result<String> {
+        let atoms = &self.inner.atoms;
+        let result = self.inner.read(
+            &[
+                atoms.UTF8_STRING,
+                atoms.UTF8_MIME_0,
+                atoms.UTF8_MIME_1,
+                atoms.STRING,
+                atoms.TEXT,
+                atoms.TEXT_MIME_UNKNOWN,
+            ],
+            ClipboardKind::Clipboard,
+        )?;
+        if result.format == atoms.STRING {
+            Ok(result.bytes.into_iter().map(char::from).collect())
+        } else {
+            String::from_utf8(result.bytes).map_err(|_| Error::ConversionFailure)
+        }
+    }
+
     pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
         let image_entries = ImageFormat::iter()
             .map(|format| (self.image_format_atom(format), format))
@@ -1114,6 +1135,34 @@ impl Clipboard {
 mod tests {
     use super::*;
     use gpui::{ExternalPaths, FileClipboardError, FileClipboardOperation};
+
+    #[test]
+    #[ignore = "requires an isolated X11 server; run under xvfb-run"]
+    fn native_text_clipboard_reads_on_worker() {
+        let clipboard = Clipboard::new().expect("clipboard");
+        let text = "日本語🙂e\u{301}\n".repeat(20_000);
+        clipboard
+            .set_text(
+                Cow::Owned(text.clone()),
+                ClipboardKind::Clipboard,
+                WaitConfig::None,
+            )
+            .expect("write");
+        let worker_clipboard = clipboard.clone();
+        let result = std::thread::spawn(move || worker_clipboard.get_text())
+            .join()
+            .expect("worker");
+        assert_eq!(result.expect("text transfer"), text);
+        let external = x11_clipboard::Clipboard::new().expect("external clipboard");
+        let atoms = &external.setter.atoms;
+        external
+            .store(atoms.clipboard, atoms.utf8_string, text.clone())
+            .expect("external write");
+        let result = std::thread::spawn(move || clipboard.get_text())
+            .join()
+            .expect("worker");
+        assert_eq!(result.expect("external text transfer"), text);
+    }
 
     #[test]
     #[ignore = "requires an isolated X11 server; run under xvfb-run"]

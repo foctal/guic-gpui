@@ -1118,6 +1118,11 @@ impl Platform for MacPlatform {
         state.general_pasteboard.read()
     }
 
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.background_executor()
+            .spawn(async move { crate::pasteboard::read_text_from_system_clipboard() })
+    }
+
     fn supports_file_clipboard(&self, operation: gpui::FileClipboardOperation) -> bool {
         operation == gpui::FileClipboardOperation::Copy
     }

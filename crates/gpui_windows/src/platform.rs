@@ -795,6 +795,11 @@ impl Platform for WindowsPlatform {
         write_to_clipboard(item);
     }
 
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.background_executor()
+            .spawn(async move { crate::clipboard::read_text_from_clipboard() })
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         read_from_clipboard()
     }
@@ -1592,6 +1597,31 @@ mod tests {
                 vec![12],
             )),
         );
+
+        {
+            use gpui::Platform as _;
+            let platform = super::WindowsPlatform::new(true).expect("headless platform");
+            let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+            write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+            unsafe { OpenClipboard(None) }.expect("hold clipboard lock");
+            let read = platform.read_text_from_clipboard_async();
+            let concurrent_read = platform.read_text_from_clipboard_async();
+            // The foreground can run while the reader waits for clipboard access.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            unsafe { CloseClipboard() }.expect("release clipboard lock");
+            assert_eq!(
+                platform.foreground_executor().block_on(read),
+                Some(text.clone())
+            );
+            assert_eq!(
+                platform.foreground_executor().block_on(concurrent_read),
+                Some(text)
+            );
+            write_to_clipboard(ClipboardItem::new_string(String::new()));
+            let read = platform.read_text_from_clipboard_async();
+            assert_eq!(platform.foreground_executor().block_on(read), None);
+        }
 
         // Keep native clipboard checks in one test to avoid competing owners.
         test_file_clipboard();

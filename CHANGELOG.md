@@ -4,6 +4,14 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
+- Add `App::read_text_from_clipboard_async()` for background plain-text clipboard
+  acquisition on macOS, Windows, X11, and Wayland. Preserve the synchronous API
+  and provide a compatibility fallback for custom platform implementations.
+- Add `ClipboardItem::plain_text()` to extract text without file-path fallback.
+- Cover asynchronous clipboard reads, cancellation, non-text data, Unicode
+  transfer, and Windows clipboard contention; run native macOS and X11 text
+  clipboard tests in CI.
+
 - Test concurrent foreground/background text layout with shared native font
   services on Core Text, DirectWrite, and Cosmic Text backends.
 

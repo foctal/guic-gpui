@@ -19,6 +19,73 @@ use gpui::{
     ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat, hash,
 };
 
+pub(crate) fn read_text_from_system_clipboard() -> Option<String> {
+    // Keep AppKit on the helper's main thread, isolated from this application's
+    // pasteboard objects. Unlike pbpaste, request only plain text: pbpaste can
+    // silently fall back to returning raw RTF or PostScript for non-text items.
+    const SCRIPT: &str = r#"
+        ObjC.import('AppKit');
+        ObjC.import('Foundation');
+        function run() {
+            var board = $.NSPasteboard.generalPasteboard;
+            if (!board.types.containsObject($.NSPasteboardTypeString)) return;
+            var text = board.stringForType($.NSPasteboardTypeString);
+            if (!text.isNil()) {
+                $.NSFileHandle.fileHandleWithStandardOutput.writeData(
+                    text.dataUsingEncoding($.NSUTF8StringEncoding));
+            }
+        }
+    "#;
+    use std::{
+        io::Read as _,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    let mut child = gpui_util::new_std_command("/usr/bin/osascript")
+        .args(["-l", "JavaScript", "-e", SCRIPT])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Drain stdout concurrently: waiting for exit before reading would deadlock
+    // on a large paste. Reap a helper even if its native owner stops responding.
+    std::thread::scope(|scope| {
+        let reader = std::thread::Builder::new()
+            .name("clipboard-output".into())
+            .spawn_scoped(scope, move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes).ok()?;
+                String::from_utf8(bytes).ok()
+            });
+        let Ok(reader) = reader else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let success = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break false;
+                }
+            }
+        };
+        let text = reader.join().ok().flatten();
+        success
+            .then_some(text)
+            .flatten()
+            .filter(|text| !text.is_empty())
+    })
+}
+
 pub struct Pasteboard {
     inner: StrongPtr,
     text_hash_type: StrongPtr,
@@ -681,5 +748,43 @@ mod tests {
             }
             other => panic!("expected Image, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod async_text_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "uses the system clipboard; run in an isolated desktop session"]
+    fn system_helper_reads_unicode_text_off_thread() {
+        objc::rc::autoreleasepool(|| {
+            let pasteboard = Pasteboard::general();
+            let saved = pasteboard.read();
+            let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+            pasteboard.write(ClipboardItem::new_string(text.clone()));
+            let result = std::thread::spawn(read_text_from_system_clipboard).join();
+            pasteboard.write(ClipboardItem::new_string(String::new()));
+            let empty = std::thread::spawn(read_text_from_system_clipboard).join();
+            unsafe {
+                let types = NSArray::arrayWithObjects(nil, &[ns_string("public.rtf")]);
+                pasteboard.inner.declareTypes_owner(types, nil);
+                pasteboard.inner.setString_forType(
+                    ns_string("{\\rtf1 raw rich text}"),
+                    ns_string("public.rtf"),
+                );
+            }
+            let rich_text = std::thread::spawn(read_text_from_system_clipboard).join();
+            pasteboard.write(saved.unwrap_or_else(|| ClipboardItem::new_string(String::new())));
+            assert_eq!(result.expect("clipboard worker"), Some(text));
+            assert_eq!(empty.expect("empty clipboard worker"), None);
+            // AppKit may synthesize plain text from RTF, but must never return
+            // the raw RTF representation as pbpaste's fallback would.
+            assert!(
+                rich_text
+                    .expect("RTF clipboard worker")
+                    .is_none_or(|text| !text.starts_with("{\\rtf"))
+            );
+        });
     }
 }

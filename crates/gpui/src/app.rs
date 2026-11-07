@@ -1369,6 +1369,21 @@ impl App {
         self.platform.read_from_clipboard()
     }
 
+    /// Reads plain clipboard text asynchronously on the desktop backends.
+    ///
+    /// Returns `None` for empty, unavailable, or unsupported text. Images,
+    /// file lists, and application metadata are not requested. Line endings
+    /// are preserved; callers decide whether to normalize them.
+    ///
+    /// The clipboard may change before the native request is serviced. Callers
+    /// must preserve input order and reject results for obsolete edit targets.
+    /// Dropping the task ignores its result; an in-flight OS transfer may finish.
+    /// The default implementation for custom backends uses their synchronous
+    /// read method; override `Platform::read_text_from_clipboard_async` to avoid it.
+    pub fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.platform.read_text_from_clipboard_async()
+    }
+
     /// Sets the text rendering mode for the application.
     pub fn set_text_rendering_mode(&mut self, mode: TextRenderingMode) {
         self.text_rendering_mode.set(mode);

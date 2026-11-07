@@ -307,6 +307,15 @@ pub trait Platform: 'static {
     fn should_auto_hide_scrollbars(&self) -> bool;
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
+    /// Reads clipboard text without waiting for native data transfer on the UI thread.
+    /// Custom backends retain the synchronous fallback unless they override this method.
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        Task::ready(
+            self.read_from_clipboard()
+                .and_then(|item| item.plain_text()),
+        )
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem);
 
     /// Whether this backend can publish file paths with the requested intent.
@@ -2399,6 +2408,18 @@ impl ClipboardItem {
         }
     }
 
+    /// Concatenates plain text entries, excluding file paths, images, and metadata.
+    /// Returns `None` when there is no nonempty plain text.
+    pub fn plain_text(&self) -> Option<String> {
+        let mut text = String::new();
+        for entry in &self.entries {
+            if let ClipboardEntry::String(entry) = entry {
+                text.push_str(&entry.text);
+            }
+        }
+        (!text.is_empty()).then_some(text)
+    }
+
     /// Concatenates together all the ClipboardString entries in the item.
     /// Returns None if there were no ClipboardString entries.
     pub fn text(&self) -> Option<String> {
@@ -3063,5 +3084,58 @@ mod file_clipboard_tests {
             ));
             assert_eq!(cx.read_from_clipboard(), Some(original));
         });
+    }
+}
+
+#[cfg(test)]
+mod async_clipboard_tests {
+    use super::*;
+
+    #[crate::test]
+    async fn asynchronous_text_read_captures_test_clipboard_and_preserves_writes(
+        cx: &mut crate::TestAppContext,
+    ) {
+        let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+        let read = cx.update(|cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            cx.read_text_from_clipboard_async()
+        });
+        cx.write_to_clipboard(ClipboardItem::new_string("later".into()));
+        assert_eq!(read.await, Some(text));
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("later")
+        );
+        let read = cx.update(|cx| cx.read_text_from_clipboard_async());
+        drop(read);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("later")
+        );
+    }
+
+    #[crate::test]
+    async fn asynchronous_text_read_ignores_empty_and_nontext_items(
+        cx: &mut crate::TestAppContext,
+    ) {
+        for item in [
+            ClipboardItem::new_string(String::new()),
+            ClipboardItem {
+                entries: vec![ClipboardEntry::ExternalPaths(crate::ExternalPaths(
+                    smallvec::smallvec!["file.txt".into()],
+                ))],
+            },
+        ] {
+            let read = cx.update(|cx| {
+                cx.write_to_clipboard(item);
+                cx.read_text_from_clipboard_async()
+            });
+            assert_eq!(read.await, None);
+        }
     }
 }

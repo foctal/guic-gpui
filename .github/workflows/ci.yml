@@ -29,6 +29,8 @@ jobs:
         run: cargo test -p guic-gpui-linux --features test-support --lib --locked
       - name: Test native X11 file clipboard
         run: xvfb-run -a cargo test -p guic-gpui-linux --features test-support --lib native_file_clipboard_round_trip --locked -- --ignored
+      - name: Test native X11 asynchronous text clipboard
+        run: xvfb-run -a cargo test -p guic-gpui-linux --features test-support --lib native_text_clipboard_reads_on_worker --locked -- --ignored
       - name: Test WGPU text layout and atlas
         run: cargo test -p guic-gpui-wgpu --lib --locked
 
@@ -54,6 +56,9 @@ jobs:
       - name: Test macOS font-kit backend
         if: runner.os == 'macOS'
         run: cargo test -p guic-gpui-macos --features font-kit --locked
+      - name: Test macOS asynchronous text clipboard
+        if: runner.os == 'macOS'
+        run: cargo test -p guic-gpui-macos --features font-kit --lib system_helper_reads_unicode_text_off_thread --locked -- --ignored
       - name: Check and test macOS font-kit with core-foundation 0.10.0
         if: runner.os == 'macOS'
         run: |

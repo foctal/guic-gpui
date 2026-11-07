@@ -98,6 +98,12 @@ pub(crate) trait LinuxClient {
 
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        Task::ready(
+            self.read_from_clipboard()
+                .and_then(|item| item.plain_text()),
+        )
+    }
     fn active_window(&self) -> Option<AnyWindowHandle>;
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
     fn run(&self);
@@ -762,6 +768,10 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.inner.read_from_clipboard()
+    }
+
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.inner.read_text_from_clipboard_async()
     }
 
     fn add_recent_document(&self, _path: &Path) {}

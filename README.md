@@ -23,6 +23,12 @@ gpui_platform = { package = "guic-gpui-platform", version = "0.5.0", features = 
 gpui_platform = { package = "guic-gpui-platform", version = "0.5.0" }
 ```
 
+## Clipboard integration
+
+See [asynchronous text clipboard](docs/text-clipboard.md) for nonblocking desktop
+text reads and [native file clipboard](docs/file-clipboard.md) for file copy/move
+integration.
+
 ## License
 
 The source is distributed under Apache-2.0. Bundled IBM Plex Sans and Lilex
