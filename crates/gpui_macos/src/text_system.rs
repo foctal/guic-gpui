@@ -881,6 +881,46 @@ mod tests {
     use gpui::{FontRun, GlyphId, PlatformTextSystem, font, px};
 
     #[test]
+    fn background_layout_matches_foreground_with_shared_native_fonts() {
+        let platform = std::sync::Arc::new(MacTextSystem::new());
+        let shared = std::sync::Arc::new(gpui::TextSystem::new(platform));
+        let shape = |system: &gpui::WindowTextSystem, index| {
+            let text: gpui::SharedString =
+                format!("let value_{index} = \"日本🙂 e\u{301}\";").into();
+            system.shape_line(
+                text.clone(),
+                gpui::px(13.0),
+                &[gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font("Menlo"),
+                    ..Default::default()
+                }],
+                None,
+            )
+        };
+        let baseline_system = gpui::WindowTextSystem::new(shared.clone());
+        let baseline = (0..32)
+            .map(|index| {
+                let line = shape(&baseline_system, index);
+                (line.len(), line.width())
+            })
+            .collect::<Vec<_>>();
+        let check = || {
+            let system = gpui::WindowTextSystem::new(shared.clone());
+            for (index, expected) in baseline.iter().enumerate() {
+                let line = shape(&system, index);
+                assert_eq!((line.len(), line.width()), *expected);
+                assert!(line.width() > gpui::px(0.0));
+            }
+        };
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(&check);
+            check();
+            worker.join().expect("background shaping succeeds");
+        });
+    }
+
+    #[test]
     fn native_font_equivalence_preserves_face_and_size() {
         use super::equivalent_native_fonts;
         use core_text::font::new_from_name;
