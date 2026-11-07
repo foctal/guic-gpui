@@ -4,6 +4,16 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
+- Test concurrent foreground/background text layout with shared native font
+  services on Core Text, DirectWrite, and Cosmic Text backends.
+
+- Windows: Pass restart executable paths through the helper's environment, so
+  Unicode paths, quotes, dollar signs, and backticks are never interpreted as
+  PowerShell source. Clear the temporary variable before relaunching and start
+  the helper without user profiles or interactive prompts.
+- Windows: Make unsupported hide/unhide-other-applications requests harmless
+  instead of panicking, consistent with the Linux backend.
+
 ## [0.5.0] - 2026-11-02
 
 - Keep the element arena in a separate allocation to avoid aliasing it through
