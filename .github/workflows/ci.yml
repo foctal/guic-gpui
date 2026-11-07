@@ -45,12 +45,9 @@ jobs:
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo check --workspace --locked
       - run: cargo test -p guic-gpui --lib --locked
-      - name: Test Windows file clipboard serialization
+      - name: Test Windows backend
         if: runner.os == 'Windows'
-        run: cargo test -p guic-gpui-windows --features test-support --lib file_clipboard_tests --locked
-      - name: Test Windows text clipboard round trips
-        if: runner.os == 'Windows'
-        run: cargo test -p guic-gpui-windows --features test-support --lib platform::tests::test_clipboard --locked
+        run: cargo test -p guic-gpui-windows --features test-support --lib --locked
       - name: Check macOS font-kit backend
         if: runner.os == 'macOS'
         run: cargo check -p guic-gpui-macos --features font-kit --locked

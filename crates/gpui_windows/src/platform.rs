@@ -441,23 +441,7 @@ impl Platform for WindowsPlatform {
         let Some(app_path) = binary_path.or(self.app_path().log_err()) else {
             return;
         };
-        let script = format!(
-            r#"
-            $pidToWaitFor = {}
-            $exePath = "{}"
-
-            while ($true) {{
-                $process = Get-Process -Id $pidToWaitFor -ErrorAction SilentlyContinue
-                if (-not $process) {{
-                    Start-Process -FilePath $exePath
-                    break
-                }}
-                Start-Sleep -Seconds 0.1
-            }}
-            "#,
-            pid,
-            app_path.display(),
-        );
+        let script = restart_script(pid);
 
         // Defer spawning to the foreground executor so it runs after the
         // current `AppCell` borrow is released. On Windows, `Command::spawn()`
@@ -471,7 +455,10 @@ impl Platform for WindowsPlatform {
                     reason = "We are restarting ourselves, using std command thus is fine"
                 )]
                 let restart_process = new_std_command(get_windows_system_shell())
-                    .arg("-command")
+                    .env("GUIC_RESTART_EXECUTABLE", app_path)
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-Command")
                     .arg(script)
                     .spawn();
 
@@ -487,14 +474,12 @@ impl Platform for WindowsPlatform {
 
     fn hide(&self) {}
 
-    // todo(windows)
     fn hide_other_apps(&self) {
-        unimplemented!()
+        log::info!("hide_other_apps is not supported on Windows, ignoring the call");
     }
 
-    // todo(windows)
     fn unhide_other_apps(&self) {
-        unimplemented!()
+        log::info!("unhide_other_apps is not supported on Windows, ignoring the call");
     }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
@@ -1520,10 +1505,68 @@ unsafe extern "system" fn window_procedure(
     result
 }
 
+// Keep executable paths out of PowerShell source entirely. The environment
+// preserves native Windows strings without quoting or lossy UTF-8 conversion.
+fn restart_script(pid: u32) -> String {
+    format!(
+        r#"
+        $pidToWaitFor = {pid}
+        $exePath = $env:GUIC_RESTART_EXECUTABLE
+        Remove-Item Env:GUIC_RESTART_EXECUTABLE
+
+        while (Get-Process -Id $pidToWaitFor -ErrorAction SilentlyContinue) {{
+            Start-Sleep -Milliseconds 100
+        }}
+        Start-Process -FilePath $exePath
+        "#,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{read_from_clipboard, write_to_clipboard};
     use gpui::ClipboardItem;
+
+    #[test]
+    fn restart_path_is_not_interpreted_as_script() {
+        let path = r"C:\apps\O'Brien ‘quoted’ $env:TEMP $(Write-Output injected) `test\日本語.exe";
+        let script = super::restart_script(42);
+        assert!(script.contains("$pidToWaitFor = 42"));
+        assert!(!script.contains(path));
+        assert!(script.contains("Start-Sleep -Milliseconds 100"));
+
+        // Evaluate only environment loading and cleanup, never the restart loop.
+        let setup = script
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                line.starts_with("$exePath =") || line.starts_with("Remove-Item Env:")
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+        let output = gpui_util::new_std_command(gpui_util::get_windows_system_shell())
+            .env("GUIC_RESTART_EXECUTABLE", path)
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {setup}; if (Test-Path Env:GUIC_RESTART_EXECUTABLE) {{ exit 1 }}; [Console]::Write($exePath)"
+            ))
+            .output()
+            .expect("PowerShell path round trip");
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("UTF-8 output"),
+            path
+        );
+    }
+
+    #[test]
+    fn unsupported_application_visibility_is_harmless() {
+        use gpui::Platform as _;
+
+        let platform = super::WindowsPlatform::new(true).expect("headless Windows platform");
+        platform.hide_other_apps();
+        platform.unhide_other_apps();
+    }
 
     #[test]
     fn test_clipboard() {
