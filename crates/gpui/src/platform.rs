@@ -1813,6 +1813,23 @@ pub trait InputHandler: 'static {
     }
 }
 
+/// Selects the rendering composition mode for a Windows window.
+///
+/// Other platforms ignore this setting. The mode cannot be changed after creation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowsCompositionMode {
+    /// Use the platform default, including `GPUI_DISABLE_DIRECT_COMPOSITION`.
+    #[default]
+    Auto,
+    /// Use DirectComposition, overriding the process-wide environment setting.
+    DirectComposition,
+    /// Use a redirected window surface for native menus and child HWND controls.
+    ///
+    /// This disables DirectComposition for this window. Embedded WebViews still
+    /// occupy a separate native layer and cannot be covered by GPUI overlays.
+    RedirectionBitmap,
+}
+
 /// The variables that can be configured when creating a new window
 #[derive(Debug)]
 pub struct WindowOptions {
@@ -1864,6 +1881,10 @@ pub struct WindowOptions {
     /// The appearance of the window background.
     pub window_background: WindowBackgroundAppearance,
 
+    /// Windows rendering composition mode. Ignored on other platforms.
+    /// Use [`WindowsCompositionMode::RedirectionBitmap`] for native menus or child controls.
+    pub windows_composition: WindowsCompositionMode,
+
     /// Application identifier of the window. Can by used by desktop environments to group applications together.
     pub app_id: Option<String>,
 
@@ -1893,6 +1914,8 @@ pub struct WindowOptions {
 #[allow(missing_docs)]
 pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
+
+    pub windows_composition: WindowsCompositionMode,
 
     /// The titlebar configuration of the window
     #[cfg_attr(feature = "wayland", allow(dead_code))]
@@ -1999,6 +2022,7 @@ impl Default for WindowOptions {
             is_minimizable: true,
             display_id: None,
             window_background: WindowBackgroundAppearance::default(),
+            windows_composition: WindowsCompositionMode::default(),
             icon: None,
             app_id: None,
             window_min_size: None,

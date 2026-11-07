@@ -439,6 +439,11 @@ impl WindowsWindow {
             invalidate_devices,
             draw_coordinator,
         } = creation_info;
+        let disable_direct_composition = match params.windows_composition {
+            gpui::WindowsCompositionMode::Auto => disable_direct_composition,
+            gpui::WindowsCompositionMode::DirectComposition => false,
+            gpui::WindowsCompositionMode::RedirectionBitmap => true,
+        };
         register_window_class(icon);
         let parent_hwnd = if params.kind == WindowKind::Dialog {
             let parent_window = unsafe { GetActiveWindow() };

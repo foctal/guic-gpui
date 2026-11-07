@@ -1399,6 +1399,7 @@ impl Window {
             is_minimizable,
             display_id,
             window_background,
+            windows_composition,
             app_id,
             window_min_size,
             window_decorations,
@@ -1420,6 +1421,7 @@ impl Window {
             handle,
             WindowParams {
                 bounds: window_bounds.get_bounds(),
+                windows_composition,
                 titlebar,
                 kind,
                 is_movable,
