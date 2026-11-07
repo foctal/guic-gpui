@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
+    os::windows::ffi::OsStringExt as _,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{
@@ -1251,6 +1252,30 @@ fn open_target_in_explorer(target: &Path) -> Result<()> {
     })
 }
 
+fn file_dialog_accepted(result: windows::core::Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Owns a string returned by the Shell's COM task allocator.
+struct ShellPath(PWSTR);
+
+impl ShellPath {
+    fn to_path_buf(&self) -> PathBuf {
+        // Windows paths may contain unpaired UTF-16 surrogates.
+        PathBuf::from(OsString::from_wide(unsafe { self.0.as_wide() }))
+    }
+}
+
+impl Drop for ShellPath {
+    fn drop(&mut self) {
+        unsafe { CoTaskMemFree(Some(self.0.0.cast())) };
+    }
+}
+
 fn file_open_dialog(
     options: PathPromptOptions,
     window: Option<HWND>,
@@ -1274,7 +1299,7 @@ fn file_open_dialog(
             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
         }
 
-        if folder_dialog.Show(window).is_err() {
+        if !file_dialog_accepted(folder_dialog.Show(window))? {
             // User cancelled
             return Ok(None);
         }
@@ -1289,8 +1314,8 @@ fn file_open_dialog(
     let mut paths = Vec::with_capacity(file_count as usize);
     for i in 0..file_count {
         let item = unsafe { results.GetItemAt(i)? };
-        let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)?.to_string()? };
-        paths.push(PathBuf::from(path));
+        let path = ShellPath(unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)? });
+        paths.push(path.to_path_buf());
     }
 
     Ok(Some(paths))
@@ -1302,16 +1327,15 @@ fn file_save_dialog(
     window: Option<HWND>,
 ) -> Result<Option<PathBuf>> {
     let dialog: IFileSaveDialog = unsafe { CoCreateInstance(&FileSaveDialog, None, CLSCTX_ALL)? };
-    if !directory.to_string_lossy().is_empty()
+    if !directory.as_os_str().is_empty()
         && let Some(full_path) = directory
             .canonicalize()
             .context("failed to canonicalize directory")
             .log_err()
     {
         let full_path = dunce::simplified(&full_path);
-        let full_path_string = full_path.display().to_string();
         let path_item: IShellItem =
-            unsafe { SHCreateItemFromParsingName(&HSTRING::from(full_path_string), None)? };
+            unsafe { SHCreateItemFromParsingName(&HSTRING::from(full_path.as_os_str()), None)? };
         unsafe {
             dialog
                 .SetFolder(&path_item)
@@ -1334,19 +1358,14 @@ fn file_save_dialog(
             pszName: windows::core::w!("All files"),
             pszSpec: windows::core::w!("*.*"),
         }])?;
-        if dialog.Show(window).is_err() {
+        if !file_dialog_accepted(dialog.Show(window))? {
             // User cancelled
             return Ok(None);
         }
     }
     let shell_item = unsafe { dialog.GetResult()? };
-    let file_path_string = unsafe {
-        let pwstr = shell_item.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let string = pwstr.to_string()?;
-        CoTaskMemFree(Some(pwstr.0 as _));
-        string
-    };
-    Ok(Some(PathBuf::from(file_path_string)))
+    let path = ShellPath(unsafe { shell_item.GetDisplayName(SIGDN_FILESYSPATH)? });
+    Ok(Some(path.to_path_buf()))
 }
 
 fn load_icon() -> Result<HICON> {
@@ -1531,6 +1550,82 @@ fn restart_script(pid: u32) -> String {
 mod tests {
     use crate::{read_from_clipboard, write_to_clipboard};
     use gpui::ClipboardItem;
+
+    #[test]
+    #[ignore = "requires a Windows desktop and Direct3D device"]
+    fn native_windows_can_mix_composition_modes() -> anyhow::Result<()> {
+        use super::*;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let platform = WindowsPlatform::new(false)?;
+        let default_disabled = platform.disable_direct_composition;
+        Application::with_platform(Rc::new(platform)).run(move |cx| {
+            for (mode, disabled) in [
+                (WindowsCompositionMode::Auto, default_disabled),
+                (WindowsCompositionMode::DirectComposition, false),
+                (WindowsCompositionMode::RedirectionBitmap, true),
+            ] {
+                cx.open_window(
+                    WindowOptions {
+                        show: false,
+                        focus: false,
+                        windows_composition: mode,
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let RawWindowHandle::Win32(handle) =
+                            HasWindowHandle::window_handle(window).unwrap().as_raw()
+                        else {
+                            panic!("expected a Windows handle");
+                        };
+                        let style =
+                            unsafe { GetWindowLongW(HWND(handle.hwnd.get() as _), GWL_EXSTYLE) }
+                                as u32;
+                        assert_eq!(
+                            style & WS_EX_NOREDIRECTIONBITMAP.0 == 0,
+                            disabled,
+                            "{mode:?}"
+                        );
+                        cx.new(|_| gpui::Empty)
+                    },
+                )
+                .expect("create window and renderer");
+            }
+            cx.quit();
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn file_dialog_distinguishes_cancellation_from_failure() {
+        use super::*;
+        assert!(file_dialog_accepted(Ok(())).unwrap());
+        assert!(!file_dialog_accepted(Err(ERROR_CANCELLED.to_hresult().into())).unwrap());
+        let error = file_dialog_accepted(Err(E_ACCESSDENIED.into())).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<windows::core::Error>().unwrap().code(),
+            E_ACCESSDENIED
+        );
+    }
+
+    #[test]
+    fn shell_paths_preserve_unicode_and_unpaired_surrogates() {
+        use super::*;
+        use std::os::windows::ffi::OsStrExt as _;
+        for units in [
+            vec![67, 58, 92, 0x65e5, 0xd83d, 0xde00],
+            vec![67, 58, 92, 0xd800],
+        ] {
+            let ptr = unsafe { CoTaskMemAlloc((units.len() + 1) * 2) }.cast::<u16>();
+            assert!(!ptr.is_null());
+            unsafe {
+                std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
+                ptr.add(units.len()).write(0);
+            }
+            let path = ShellPath(PWSTR(ptr)).to_path_buf();
+            assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), units);
+        }
+    }
 
     #[test]
     fn restart_path_is_not_interpreted_as_script() {

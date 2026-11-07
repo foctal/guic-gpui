@@ -44,6 +44,15 @@ pub(crate) const KEYRING_LABEL: &str = "zed-github-account";
 const FILE_PICKER_PORTAL_MISSING: &str =
     "Couldn't open file picker due to missing xdg-desktop-portal implementation.";
 
+#[cfg(any(feature = "wayland", feature = "x11"))]
+fn file_picker_response<T>(response: Result<T, ashpd::Error>) -> Result<Option<T>> {
+    match response {
+        Ok(response) => Ok(Some(response)),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) trait LinuxClient {
     fn compositor_name(&self) -> &'static str;
     fn with_common<R>(&self, f: impl FnOnce(&mut LinuxCommon) -> R) -> R;
@@ -450,18 +459,16 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
                     }
                 };
 
-                let result = match request.response() {
-                    Ok(response) => Ok(Some(
+                let result = file_picker_response(request.response()).map(|response| {
+                    response.map(|response| {
                         response
                             .uris()
                             .iter()
                             .filter_map(|uri: &ashpd::Uri| url::Url::parse(uri.as_str()).ok())
                             .filter_map(|uri: url::Url| uri.to_file_path().ok())
-                            .collect::<Vec<_>>(),
-                    )),
-                    Err(ashpd::Error::Response(_)) => Ok(None),
-                    Err(e) => Err(e.into()),
-                };
+                            .collect::<Vec<_>>()
+                    })
+                });
                 let _ = done_tx.send(result);
             })
             .detach();
@@ -479,22 +486,28 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
         let _ = (done_tx.send(Ok(None)), directory, suggested_name);
 
         #[cfg(any(feature = "wayland", feature = "x11"))]
+        let request_builder = match ashpd::desktop::file_chooser::SaveFileRequest::default()
+            .modal(true)
+            .title("Save File")
+            .current_folder(directory)
+        {
+            Ok(builder) => builder,
+            Err(error) => {
+                let _ = done_tx.send(Err(error.into()));
+                return done_rx;
+            }
+        };
+
+        #[cfg(any(feature = "wayland", feature = "x11"))]
         let identifier = self.inner.window_identifier();
 
         #[cfg(any(feature = "wayland", feature = "x11"))]
         self.foreground_executor()
             .spawn({
-                let directory = directory.to_owned();
                 let suggested_name = suggested_name.map(|s| s.to_owned());
 
                 async move {
-                    let mut request_builder =
-                        ashpd::desktop::file_chooser::SaveFileRequest::default()
-                            .identifier(identifier.await)
-                            .modal(true)
-                            .title("Save File")
-                            .current_folder(directory)
-                            .expect("pathbuf should not be nul terminated");
+                    let mut request_builder = request_builder.identifier(identifier.await);
 
                     if let Some(suggested_name) = suggested_name {
                         request_builder = request_builder.current_name(suggested_name.as_str());
@@ -514,15 +527,15 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
                         }
                     };
 
-                    let result = match request.response() {
-                        Ok(response) => Ok(response
-                            .uris()
-                            .first()
-                            .and_then(|uri: &ashpd::Uri| url::Url::parse(uri.as_str()).ok())
-                            .and_then(|uri: url::Url| uri.to_file_path().ok())),
-                        Err(ashpd::Error::Response(_)) => Ok(None),
-                        Err(e) => Err(e.into()),
-                    };
+                    let result = file_picker_response(request.response()).map(|response| {
+                        response.and_then(|response| {
+                            response
+                                .uris()
+                                .first()
+                                .and_then(|uri: &ashpd::Uri| url::Url::parse(uri.as_str()).ok())
+                                .and_then(|uri: url::Url| uri.to_file_path().ok())
+                        })
+                    });
                     let _ = done_tx.send(result);
                 }
             })
@@ -1292,6 +1305,40 @@ pub(super) fn compositor_gpu_hint_from_dev_t(dev: u64) -> Option<gpui_wgpu::Comp
 mod tests {
     use super::*;
     use gpui::{Point, px};
+
+    #[test]
+    fn file_picker_distinguishes_cancellation_from_failure() {
+        use ashpd::{Error, desktop::ResponseError};
+        assert_eq!(file_picker_response(Ok(42)).unwrap(), Some(42));
+        assert_eq!(
+            file_picker_response::<()>(Err(Error::Response(ResponseError::Cancelled))).unwrap(),
+            None
+        );
+        let error =
+            file_picker_response::<()>(Err(Error::Response(ResponseError::Other))).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::Response(ResponseError::Other))
+        ));
+    }
+
+    #[test]
+    fn invalid_save_directory_returns_error_without_running_event_loop() {
+        let platform = LinuxPlatform {
+            inner: crate::linux::headless::HeadlessClient::new(),
+        };
+        let mut result =
+            platform.prompt_for_new_path(Path::new("invalid\0directory"), Some("file.txt"));
+        let error = result
+            .try_recv()
+            .expect("open response channel")
+            .expect("invalid paths must be rejected before contacting the portal")
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ashpd::Error>(),
+            Some(ashpd::Error::NulTerminated(7))
+        ));
+    }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     #[test]
