@@ -3002,6 +3002,46 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_send_yields_while_recipient_is_not_reading() {
+        use std::{io::Read, os::unix::net::UnixStream, sync::mpsc};
+
+        let (socket, _server) = UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let mut event_loop = EventLoop::try_new().unwrap();
+        let clipboard = Clipboard::new(connection, event_loop.handle());
+        let mut state = WaylandClientStatePtr(Weak::new());
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let payload = vec![b'x'; 4 * 1024 * 1024];
+        clipboard.send_bytes(writer.into(), payload.clone());
+
+        let (dispatched, wait_for_dispatch) = mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            // Drain even after a timeout so a blocking-write regression fails
+            // an assertion instead of hanging the test process.
+            let yielded = wait_for_dispatch
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+            (yielded, bytes)
+        });
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        let _ = dispatched.send(());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !receiver.is_finished() && std::time::Instant::now() < deadline {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut state)
+                .unwrap();
+        }
+        let (yielded, bytes) = receiver.join().unwrap();
+        assert!(yielded, "clipboard write blocked the event loop");
+        assert_eq!(bytes, payload);
+    }
+
+    #[test]
     fn file_clipboard_sends_each_mime_and_resets_intent_for_text() {
         use gpui::{ClipboardItem, ExternalPaths, FileClipboardOperation};
         use std::{io::Read, os::unix::net::UnixStream};

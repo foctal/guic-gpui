@@ -310,32 +310,37 @@ impl Clipboard {
     }
 
     pub fn send_bytes(&self, fd: OwnedFd, bytes: Vec<u8>) {
+        // Readiness only guarantees space for some bytes. A blocking descriptor
+        // can stall the event loop when the recipient stops draining a large paste.
+        let mut fd = filedescriptor::FileDescriptor::new(File::from(fd));
+        if let Err(error) = fd.set_non_blocking(true) {
+            log::error!("failed to prepare clipboard pipe: {error}");
+            return;
+        }
         let mut written = 0;
-        self.loop_handle
-            .insert_source(
-                calloop::generic::Generic::new(
-                    File::from(fd),
-                    calloop::Interest::WRITE,
-                    calloop::Mode::Level,
-                ),
-                move |_, file, _| {
-                    let file = unsafe { file.get_mut() };
-                    loop {
-                        match file.write(&bytes[written..]) {
-                            Ok(n) if written + n == bytes.len() => {
-                                written += n;
-                                break Ok(PostAction::Remove);
-                            }
-                            Ok(n) => written += n,
-                            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                                break Ok(PostAction::Continue);
-                            }
-                            Err(_) => break Ok(PostAction::Remove),
+        if let Err(error) = self.loop_handle.insert_source(
+            calloop::generic::Generic::new(fd, calloop::Interest::WRITE, calloop::Mode::Level),
+            move |_, file, _| {
+                let file = unsafe { file.get_mut() };
+                loop {
+                    match file.write(&bytes[written..]) {
+                        Ok(0) => break Ok(PostAction::Remove),
+                        Ok(n) if written + n == bytes.len() => {
+                            written += n;
+                            break Ok(PostAction::Remove);
                         }
+                        Ok(n) => written += n,
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            break Ok(PostAction::Continue);
+                        }
+                        Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                        Err(_) => break Ok(PostAction::Remove),
                     }
-                },
-            )
-            .unwrap();
+                }
+            },
+        ) {
+            log::error!("failed to register clipboard pipe: {error}");
+        }
     }
 }
 
