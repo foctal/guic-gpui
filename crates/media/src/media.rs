@@ -180,18 +180,29 @@ pub mod core_media {
     impl_CFTypeDescription!(CMBlockBuffer);
 
     impl CMBlockBuffer {
+        /// Borrows the data in a contiguous block buffer.
+        ///
+        /// # Panics
+        /// Panics if Core Media cannot expose the data or the buffer spans
+        /// multiple noncontiguous memory blocks.
         pub fn bytes(&self) -> &[u8] {
             unsafe {
                 let mut bytes = ptr::null();
+                let mut contiguous_len = 0;
                 let mut len = 0;
                 let result = CMBlockBufferGetDataPointer(
                     self.as_concrete_TypeRef(),
                     0,
-                    &mut 0,
+                    &mut contiguous_len,
                     &mut len,
                     &mut bytes,
                 );
                 assert!(result == 0, "could not get block buffer data");
+                assert_eq!(contiguous_len, len, "block buffer data is not contiguous");
+                if len == 0 {
+                    return &[];
+                }
+                assert!(!bytes.is_null(), "block buffer data pointer is null");
                 std::slice::from_raw_parts(bytes, len)
             }
         }
@@ -207,6 +218,83 @@ pub mod core_media {
             total_length_out: *mut usize,
             data_pointer_out: *mut *const u8,
         ) -> OSStatus;
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use core_foundation::base::CFAllocatorRef;
+
+        #[link(name = "CoreMedia", kind = "framework")]
+        unsafe extern "C" {
+            fn CMBlockBufferCreateEmpty(
+                allocator: CFAllocatorRef,
+                capacity: u32,
+                flags: u32,
+                buffer: *mut CMBlockBufferRef,
+            ) -> OSStatus;
+            fn CMBlockBufferAppendMemoryBlock(
+                buffer: CMBlockBufferRef,
+                memory: *mut c_void,
+                length: usize,
+                allocator: CFAllocatorRef,
+                source: *const c_void,
+                offset: usize,
+                data_length: usize,
+                flags: u32,
+            ) -> OSStatus;
+            fn CMBlockBufferReplaceDataBytes(
+                source: *const c_void,
+                buffer: CMBlockBufferRef,
+                offset: usize,
+                length: usize,
+            ) -> OSStatus;
+        }
+
+        fn block_buffer(blocks: usize) -> CMBlockBuffer {
+            unsafe {
+                let mut buffer = ptr::null();
+                assert_eq!(CMBlockBufferCreateEmpty(ptr::null(), 0, 0, &mut buffer), 0);
+                let buffer = CMBlockBuffer::wrap_under_create_rule(buffer);
+                for index in 0..blocks {
+                    assert_eq!(
+                        CMBlockBufferAppendMemoryBlock(
+                            buffer.as_concrete_TypeRef(),
+                            ptr::null_mut(),
+                            8,
+                            ptr::null(),
+                            ptr::null(),
+                            0,
+                            8,
+                            1,
+                        ),
+                        0
+                    );
+                    assert_eq!(
+                        CMBlockBufferReplaceDataBytes(
+                            b"abcdefgh".as_ptr().cast(),
+                            buffer.as_concrete_TypeRef(),
+                            index * 8,
+                            8,
+                        ),
+                        0
+                    );
+                }
+                buffer
+            }
+        }
+
+        #[test]
+        fn contiguous_block_buffer_exposes_all_bytes() {
+            assert_eq!(block_buffer(1).bytes(), b"abcdefgh");
+        }
+
+        #[test]
+        #[should_panic(expected = "block buffer data is not contiguous")]
+        fn noncontiguous_block_buffer_does_not_expose_an_oversized_slice() {
+            let buffer = block_buffer(2);
+            let _ = buffer.bytes();
+        }
     }
 }
 
