@@ -307,6 +307,15 @@ pub trait Platform: 'static {
     fn should_auto_hide_scrollbars(&self) -> bool;
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
+    /// Reads clipboard text without waiting for native data transfer on the UI thread.
+    /// Custom backends retain the synchronous fallback unless they override this method.
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        Task::ready(
+            self.read_from_clipboard()
+                .and_then(|item| item.plain_text()),
+        )
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem);
 
     /// Whether this backend can publish file paths with the requested intent.
@@ -1804,6 +1813,23 @@ pub trait InputHandler: 'static {
     }
 }
 
+/// Selects the rendering composition mode for a Windows window.
+///
+/// Other platforms ignore this setting. The mode cannot be changed after creation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowsCompositionMode {
+    /// Use the platform default, including `GPUI_DISABLE_DIRECT_COMPOSITION`.
+    #[default]
+    Auto,
+    /// Use DirectComposition, overriding the process-wide environment setting.
+    DirectComposition,
+    /// Use a redirected window surface for native menus and GDI child controls.
+    ///
+    /// This disables DirectComposition for this window. Embedded WebViews still
+    /// occupy a separate native layer and cannot be covered by GPUI overlays.
+    RedirectionBitmap,
+}
+
 /// The variables that can be configured when creating a new window
 #[derive(Debug)]
 pub struct WindowOptions {
@@ -1855,6 +1881,10 @@ pub struct WindowOptions {
     /// The appearance of the window background.
     pub window_background: WindowBackgroundAppearance,
 
+    /// Windows rendering composition mode. Ignored on other platforms.
+    /// Use [`WindowsCompositionMode::RedirectionBitmap`] for native menus or GDI child controls.
+    pub windows_composition: WindowsCompositionMode,
+
     /// Application identifier of the window. Can by used by desktop environments to group applications together.
     pub app_id: Option<String>,
 
@@ -1884,6 +1914,8 @@ pub struct WindowOptions {
 #[allow(missing_docs)]
 pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
+
+    pub windows_composition: WindowsCompositionMode,
 
     /// The titlebar configuration of the window
     #[cfg_attr(feature = "wayland", allow(dead_code))]
@@ -1990,6 +2022,7 @@ impl Default for WindowOptions {
             is_minimizable: true,
             display_id: None,
             window_background: WindowBackgroundAppearance::default(),
+            windows_composition: WindowsCompositionMode::default(),
             icon: None,
             app_id: None,
             window_min_size: None,
@@ -2317,16 +2350,24 @@ impl crate::ExternalPaths {
 
     /// Serializes absolute file URLs for the `text/uri-list` clipboard format.
     /// Reserved characters, Unicode and line breaks are percent-encoded.
+    /// Returns [`FileClipboardError::Unsupported`] on targets without native paths.
     pub fn clipboard_uri_list(&self) -> std::result::Result<String, FileClipboardError> {
-        self.validate_for_clipboard()?;
-        let mut result = String::new();
-        for path in &self.0 {
-            let uri =
-                url::Url::from_file_path(path).map_err(|_| FileClipboardError::InvalidPaths)?;
-            result.push_str(uri.as_str());
-            result.push_str("\r\n");
+        #[cfg(not(any(unix, windows, target_os = "wasi")))]
+        {
+            Err(FileClipboardError::Unsupported)
         }
-        Ok(result)
+        #[cfg(any(unix, windows, target_os = "wasi"))]
+        {
+            self.validate_for_clipboard()?;
+            let mut result = String::new();
+            for path in &self.0 {
+                let uri =
+                    url::Url::from_file_path(path).map_err(|_| FileClipboardError::InvalidPaths)?;
+                result.push_str(uri.as_str());
+                result.push_str("\r\n");
+            }
+            Ok(result)
+        }
     }
 
     /// Serializes the GNOME file clipboard format, including copy or move intent.
@@ -2397,6 +2438,18 @@ impl ClipboardItem {
         Self {
             entries: vec![ClipboardEntry::Image(image.clone())],
         }
+    }
+
+    /// Concatenates plain text entries, excluding file paths, images, and metadata.
+    /// Returns `None` when there is no nonempty plain text.
+    pub fn plain_text(&self) -> Option<String> {
+        let mut text = String::new();
+        for entry in &self.entries {
+            if let ClipboardEntry::String(entry) = entry {
+                text.push_str(&entry.text);
+            }
+        }
+        (!text.is_empty()).then_some(text)
     }
 
     /// Concatenates together all the ClipboardString entries in the item.
@@ -3063,5 +3116,58 @@ mod file_clipboard_tests {
             ));
             assert_eq!(cx.read_from_clipboard(), Some(original));
         });
+    }
+}
+
+#[cfg(test)]
+mod async_clipboard_tests {
+    use super::*;
+
+    #[crate::test]
+    async fn asynchronous_text_read_captures_test_clipboard_and_preserves_writes(
+        cx: &mut crate::TestAppContext,
+    ) {
+        let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+        let read = cx.update(|cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            cx.read_text_from_clipboard_async()
+        });
+        cx.write_to_clipboard(ClipboardItem::new_string("later".into()));
+        assert_eq!(read.await, Some(text));
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("later")
+        );
+        let read = cx.update(|cx| cx.read_text_from_clipboard_async());
+        drop(read);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("later")
+        );
+    }
+
+    #[crate::test]
+    async fn asynchronous_text_read_ignores_empty_and_nontext_items(
+        cx: &mut crate::TestAppContext,
+    ) {
+        for item in [
+            ClipboardItem::new_string(String::new()),
+            ClipboardItem {
+                entries: vec![ClipboardEntry::ExternalPaths(crate::ExternalPaths(
+                    smallvec::smallvec!["file.txt".into()],
+                ))],
+            },
+        ] {
+            let read = cx.update(|cx| {
+                cx.write_to_clipboard(item);
+                cx.read_text_from_clipboard_async()
+            });
+            assert_eq!(read.await, None);
+        }
     }
 }

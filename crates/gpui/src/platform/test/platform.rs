@@ -25,7 +25,7 @@ pub(crate) struct TestPlatform {
     pub(crate) active_window: RefCell<Option<TestWindow>>,
     active_display: Rc<dyn PlatformDisplay>,
     active_cursor: Mutex<CursorStyle>,
-    current_clipboard_item: Mutex<Option<ClipboardItem>>,
+    current_clipboard_item: Mutex<Option<Arc<ClipboardItem>>>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     current_primary_item: Mutex<Option<ClipboardItem>>,
     #[cfg(target_os = "macos")]
@@ -103,6 +103,11 @@ pub(crate) struct TestPrompts {
 }
 
 impl TestPlatform {
+    #[cfg(test)]
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        *self.active_cursor.lock()
+    }
+
     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
         Self::with_platform(
             executor,
@@ -535,11 +540,17 @@ impl Platform for TestPlatform {
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        self.current_clipboard_item.lock().clone()
+        self.current_clipboard_item.lock().as_deref().cloned()
+    }
+
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        let item = self.current_clipboard_item.lock().clone();
+        self.background_executor
+            .spawn(async move { item.and_then(|item| item.plain_text()) })
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        *self.current_clipboard_item.lock() = Some(item);
+        *self.current_clipboard_item.lock() = Some(Arc::new(item));
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]

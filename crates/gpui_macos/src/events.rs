@@ -26,6 +26,16 @@ pub(crate) const ESCAPE_KEY: u16 = 0x1b;
 const TAB_KEY: u16 = 0x09;
 const SHIFT_TAB_KEY: u16 = 0x19;
 
+// AppKit menu equivalents differ from the characters reported by NSEvent.
+// Keep key_to_native unchanged for synthesized input and existing callers.
+pub(crate) fn key_to_menu_equivalent(key: &str) -> Cow<'_, str> {
+    match key {
+        "backspace" => Cow::Borrowed("\u{08}"),
+        "delete" => Cow::Borrowed("\u{7f}"),
+        _ => key_to_native(key),
+    }
+}
+
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
     use cocoa::appkit::*;
     let code = match key {
@@ -571,4 +581,20 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
         let _: () = msg_send![keyboard, release];
     }
     String::from_utf16(&buffer[..buffer_size]).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod menu_equivalent_tests {
+    use super::*;
+
+    #[test]
+    fn menu_delete_keys_do_not_change_native_event_characters() {
+        assert_eq!(key_to_menu_equivalent("backspace"), "\u{08}");
+        assert_eq!(key_to_menu_equivalent("delete"), "\u{7f}");
+        assert_eq!(key_to_native("backspace"), "\u{7f}");
+        assert_eq!(key_to_native("delete"), "\u{f728}");
+        for key in ["space", "escape", "up", "f1", "a", "tab", "enter"] {
+            assert_eq!(key_to_menu_equivalent(key), key_to_native(key));
+        }
+    }
 }

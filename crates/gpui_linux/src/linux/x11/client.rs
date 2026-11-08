@@ -1813,6 +1813,17 @@ impl LinuxClient for X11Client {
             .log_with_level(log::Level::Debug)
     }
 
+    fn read_text_from_clipboard_async(&self) -> gpui::Task<Option<String>> {
+        let clipboard = self.0.borrow().clipboard.clone();
+        self.with_common(|c| c.background_executor.clone())
+            .spawn(async move {
+                clipboard
+                    .get_text()
+                    .log_with_level(log::Level::Debug)
+                    .filter(|text| !text.is_empty())
+            })
+    }
+
     fn read_from_clipboard(&self) -> Option<gpui::ClipboardItem> {
         let state = self.0.borrow_mut();
         // if the last copy was from this app, return our cached item

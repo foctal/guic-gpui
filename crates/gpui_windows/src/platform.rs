@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
+    os::windows::ffi::OsStringExt as _,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{
@@ -441,23 +442,7 @@ impl Platform for WindowsPlatform {
         let Some(app_path) = binary_path.or(self.app_path().log_err()) else {
             return;
         };
-        let script = format!(
-            r#"
-            $pidToWaitFor = {}
-            $exePath = "{}"
-
-            while ($true) {{
-                $process = Get-Process -Id $pidToWaitFor -ErrorAction SilentlyContinue
-                if (-not $process) {{
-                    Start-Process -FilePath $exePath
-                    break
-                }}
-                Start-Sleep -Seconds 0.1
-            }}
-            "#,
-            pid,
-            app_path.display(),
-        );
+        let script = restart_script(pid);
 
         // Defer spawning to the foreground executor so it runs after the
         // current `AppCell` borrow is released. On Windows, `Command::spawn()`
@@ -471,7 +456,10 @@ impl Platform for WindowsPlatform {
                     reason = "We are restarting ourselves, using std command thus is fine"
                 )]
                 let restart_process = new_std_command(get_windows_system_shell())
-                    .arg("-command")
+                    .env("GUIC_RESTART_EXECUTABLE", app_path)
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-Command")
                     .arg(script)
                     .spawn();
 
@@ -487,14 +475,12 @@ impl Platform for WindowsPlatform {
 
     fn hide(&self) {}
 
-    // todo(windows)
     fn hide_other_apps(&self) {
-        unimplemented!()
+        log::info!("hide_other_apps is not supported on Windows, ignoring the call");
     }
 
-    // todo(windows)
     fn unhide_other_apps(&self) {
-        unimplemented!()
+        log::info!("unhide_other_apps is not supported on Windows, ignoring the call");
     }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
@@ -808,6 +794,11 @@ impl Platform for WindowsPlatform {
             return;
         }
         write_to_clipboard(item);
+    }
+
+    fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.background_executor()
+            .spawn(async move { crate::clipboard::read_text_from_clipboard() })
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
@@ -1261,6 +1252,30 @@ fn open_target_in_explorer(target: &Path) -> Result<()> {
     })
 }
 
+fn file_dialog_accepted(result: windows::core::Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Owns a string returned by the Shell's COM task allocator.
+struct ShellPath(PWSTR);
+
+impl ShellPath {
+    fn to_path_buf(&self) -> PathBuf {
+        // Windows paths may contain unpaired UTF-16 surrogates.
+        PathBuf::from(OsString::from_wide(unsafe { self.0.as_wide() }))
+    }
+}
+
+impl Drop for ShellPath {
+    fn drop(&mut self) {
+        unsafe { CoTaskMemFree(Some(self.0.0.cast())) };
+    }
+}
+
 fn file_open_dialog(
     options: PathPromptOptions,
     window: Option<HWND>,
@@ -1284,7 +1299,7 @@ fn file_open_dialog(
             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
         }
 
-        if folder_dialog.Show(window).is_err() {
+        if !file_dialog_accepted(folder_dialog.Show(window))? {
             // User cancelled
             return Ok(None);
         }
@@ -1299,8 +1314,8 @@ fn file_open_dialog(
     let mut paths = Vec::with_capacity(file_count as usize);
     for i in 0..file_count {
         let item = unsafe { results.GetItemAt(i)? };
-        let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)?.to_string()? };
-        paths.push(PathBuf::from(path));
+        let path = ShellPath(unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)? });
+        paths.push(path.to_path_buf());
     }
 
     Ok(Some(paths))
@@ -1312,16 +1327,15 @@ fn file_save_dialog(
     window: Option<HWND>,
 ) -> Result<Option<PathBuf>> {
     let dialog: IFileSaveDialog = unsafe { CoCreateInstance(&FileSaveDialog, None, CLSCTX_ALL)? };
-    if !directory.to_string_lossy().is_empty()
+    if !directory.as_os_str().is_empty()
         && let Some(full_path) = directory
             .canonicalize()
             .context("failed to canonicalize directory")
             .log_err()
     {
         let full_path = dunce::simplified(&full_path);
-        let full_path_string = full_path.display().to_string();
         let path_item: IShellItem =
-            unsafe { SHCreateItemFromParsingName(&HSTRING::from(full_path_string), None)? };
+            unsafe { SHCreateItemFromParsingName(&HSTRING::from(full_path.as_os_str()), None)? };
         unsafe {
             dialog
                 .SetFolder(&path_item)
@@ -1344,19 +1358,14 @@ fn file_save_dialog(
             pszName: windows::core::w!("All files"),
             pszSpec: windows::core::w!("*.*"),
         }])?;
-        if dialog.Show(window).is_err() {
+        if !file_dialog_accepted(dialog.Show(window))? {
             // User cancelled
             return Ok(None);
         }
     }
     let shell_item = unsafe { dialog.GetResult()? };
-    let file_path_string = unsafe {
-        let pwstr = shell_item.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let string = pwstr.to_string()?;
-        CoTaskMemFree(Some(pwstr.0 as _));
-        string
-    };
-    Ok(Some(PathBuf::from(file_path_string)))
+    let path = ShellPath(unsafe { shell_item.GetDisplayName(SIGDN_FILESYSPATH)? });
+    Ok(Some(path.to_path_buf()))
 }
 
 fn load_icon() -> Result<HICON> {
@@ -1520,10 +1529,251 @@ unsafe extern "system" fn window_procedure(
     result
 }
 
+// Keep executable paths out of PowerShell source entirely. The environment
+// preserves native Windows strings without quoting or lossy UTF-8 conversion.
+fn restart_script(pid: u32) -> String {
+    format!(
+        r#"
+        $pidToWaitFor = {pid}
+        $exePath = $env:GUIC_RESTART_EXECUTABLE
+        Remove-Item Env:GUIC_RESTART_EXECUTABLE
+
+        while (Get-Process -Id $pidToWaitFor -ErrorAction SilentlyContinue) {{
+            Start-Sleep -Milliseconds 100
+        }}
+        Start-Process -FilePath $exePath
+        "#,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{read_from_clipboard, write_to_clipboard};
     use gpui::ClipboardItem;
+
+    #[test]
+    #[ignore = "requires an unobscured interactive Windows desktop and Direct3D device"]
+    fn native_child_window_stays_above_direct_composition() -> anyhow::Result<()> {
+        use super::*;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows::Win32::Graphics::Dwm::DwmFlush;
+
+        struct Background;
+        impl Render for Background {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().size_full().bg(rgb(0x0000ff))
+            }
+        }
+
+        let pixels = Rc::new(Cell::new(None));
+        let result = pixels.clone();
+        Application::with_platform(Rc::new(WindowsPlatform::new(false)?)).run(move |cx| {
+            cx.open_window(
+                WindowOptions {
+                    windows_composition: WindowsCompositionMode::DirectComposition,
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(100.), px(100.)),
+                        size(px(320.), px(240.)),
+                    ))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let RawWindowHandle::Win32(handle) =
+                        HasWindowHandle::window_handle(window).unwrap().as_raw()
+                    else {
+                        panic!("expected a Windows handle");
+                    };
+                    let parent = HWND(handle.hwnd.get() as _);
+                    let child = unsafe {
+                        CreateWindowExW(
+                            WS_EX_NOREDIRECTIONBITMAP,
+                            w!("STATIC"),
+                            w!(""),
+                            WS_VISIBLE | WS_CHILD,
+                            40,
+                            40,
+                            80,
+                            80,
+                            Some(parent),
+                            None,
+                            None,
+                            None,
+                        )
+                    }
+                    .expect("create native child");
+                    // Model a composition-backed child such as WebView2. A GDI
+                    // child instead requires the redirection-bitmap host mode.
+                    let devices = crate::directx_devices::DirectXDevices::new().unwrap();
+                    let mut child_renderer =
+                        crate::directx_renderer::DirectXRenderer::new(child, &devices, false)
+                            .unwrap();
+                    child_renderer
+                        .resize(size(DevicePixels(80), DevicePixels(80)))
+                        .unwrap();
+                    child_renderer
+                        .draw(&Scene::default(), WindowBackgroundAppearance::Opaque)
+                        .unwrap();
+                    unsafe {
+                        SetWindowPos(
+                            parent,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE,
+                        )
+                        .unwrap();
+                    }
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+                        cx.update(|cx| {
+                            let mut origin = POINT { x: 0, y: 0 };
+                            unsafe {
+                                let _ = DwmFlush();
+                                let _ = ClientToScreen(parent, &mut origin);
+                                let screen = GetDC(None);
+                                result.set(Some((
+                                    GetPixel(screen, origin.x + 10, origin.y + 100).0,
+                                    GetPixel(screen, origin.x + 70, origin.y + 70).0,
+                                )));
+                                ReleaseDC(None, screen);
+                                drop(child_renderer);
+                                let _ = DestroyWindow(child);
+                            }
+                            cx.quit();
+                        });
+                    })
+                    .detach();
+                    cx.new(|_| Background)
+                },
+            )
+            .expect("create window and renderer");
+        });
+        // COLORREF uses BGR byte order. The blue scene must be rendered while
+        // the white native child remains visible above it.
+        assert_eq!(pixels.get(), Some((0x00ff0000, 0x00ffffff)));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a Windows desktop and Direct3D device"]
+    fn native_windows_can_mix_composition_modes() -> anyhow::Result<()> {
+        use super::*;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let platform = WindowsPlatform::new(false)?;
+        let default_disabled = platform.disable_direct_composition;
+        Application::with_platform(Rc::new(platform)).run(move |cx| {
+            for (mode, disabled) in [
+                (WindowsCompositionMode::Auto, default_disabled),
+                (WindowsCompositionMode::DirectComposition, false),
+                (WindowsCompositionMode::RedirectionBitmap, true),
+            ] {
+                cx.open_window(
+                    WindowOptions {
+                        show: false,
+                        focus: false,
+                        windows_composition: mode,
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let RawWindowHandle::Win32(handle) =
+                            HasWindowHandle::window_handle(window).unwrap().as_raw()
+                        else {
+                            panic!("expected a Windows handle");
+                        };
+                        let style =
+                            unsafe { GetWindowLongW(HWND(handle.hwnd.get() as _), GWL_EXSTYLE) }
+                                as u32;
+                        assert_eq!(
+                            style & WS_EX_NOREDIRECTIONBITMAP.0 == 0,
+                            disabled,
+                            "{mode:?}"
+                        );
+                        cx.new(|_| gpui::Empty)
+                    },
+                )
+                .expect("create window and renderer");
+            }
+            cx.quit();
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn file_dialog_distinguishes_cancellation_from_failure() {
+        use super::*;
+        assert!(file_dialog_accepted(Ok(())).unwrap());
+        assert!(!file_dialog_accepted(Err(ERROR_CANCELLED.to_hresult().into())).unwrap());
+        let error = file_dialog_accepted(Err(E_ACCESSDENIED.into())).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<windows::core::Error>().unwrap().code(),
+            E_ACCESSDENIED
+        );
+    }
+
+    #[test]
+    fn shell_paths_preserve_unicode_and_unpaired_surrogates() {
+        use super::*;
+        use std::os::windows::ffi::OsStrExt as _;
+        for units in [
+            vec![67, 58, 92, 0x65e5, 0xd83d, 0xde00],
+            vec![67, 58, 92, 0xd800],
+        ] {
+            let ptr = unsafe { CoTaskMemAlloc((units.len() + 1) * 2) }.cast::<u16>();
+            assert!(!ptr.is_null());
+            unsafe {
+                std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
+                ptr.add(units.len()).write(0);
+            }
+            let path = ShellPath(PWSTR(ptr)).to_path_buf();
+            assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), units);
+        }
+    }
+
+    #[test]
+    fn restart_path_is_not_interpreted_as_script() {
+        let path = r"C:\apps\O'Brien ‘quoted’ $env:TEMP $(Write-Output injected) `test\日本語.exe";
+        let script = super::restart_script(42);
+        assert!(script.contains("$pidToWaitFor = 42"));
+        assert!(!script.contains(path));
+        assert!(script.contains("Start-Sleep -Milliseconds 100"));
+
+        // Evaluate only environment loading and cleanup, never the restart loop.
+        let setup = script
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                line.starts_with("$exePath =") || line.starts_with("Remove-Item Env:")
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+        let output = gpui_util::new_std_command(gpui_util::get_windows_system_shell())
+            .env("GUIC_RESTART_EXECUTABLE", path)
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {setup}; if (Test-Path Env:GUIC_RESTART_EXECUTABLE) {{ exit 1 }}; [Console]::Write($exePath)"
+            ))
+            .output()
+            .expect("PowerShell path round trip");
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("UTF-8 output"),
+            path
+        );
+    }
+
+    #[test]
+    fn unsupported_application_visibility_is_harmless() {
+        use gpui::Platform as _;
+
+        let platform = super::WindowsPlatform::new(true).expect("headless Windows platform");
+        platform.hide_other_apps();
+        platform.unhide_other_apps();
+    }
 
     #[test]
     fn test_clipboard() {
@@ -1549,6 +1799,31 @@ mod tests {
                 vec![12],
             )),
         );
+
+        {
+            use gpui::Platform as _;
+            let platform = super::WindowsPlatform::new(true).expect("headless platform");
+            let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+            write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+            unsafe { OpenClipboard(None) }.expect("hold clipboard lock");
+            let read = platform.read_text_from_clipboard_async();
+            let concurrent_read = platform.read_text_from_clipboard_async();
+            // The foreground can run while the reader waits for clipboard access.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            unsafe { CloseClipboard() }.expect("release clipboard lock");
+            assert_eq!(
+                platform.foreground_executor().block_on(read),
+                Some(text.clone())
+            );
+            assert_eq!(
+                platform.foreground_executor().block_on(concurrent_read),
+                Some(text)
+            );
+            write_to_clipboard(ClipboardItem::new_string(String::new()));
+            let read = platform.read_text_from_clipboard_async();
+            assert_eq!(platform.foreground_executor().block_on(read), None);
+        }
 
         // Keep native clipboard checks in one test to avoid competing owners.
         test_file_clipboard();

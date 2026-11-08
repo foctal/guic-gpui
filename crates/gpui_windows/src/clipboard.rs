@@ -138,6 +138,53 @@ pub(crate) fn write_files_to_clipboard(
     result.map_err(|error| gpui::FileClipboardError::Unavailable(error.to_string()))
 }
 
+// Each background reader needs its own native owner handle. OpenClipboard(NULL)
+// can admit overlapping readers with the same null owner, invalidating the other
+// reader's open/close scope. A message-only window makes ownership exclusive.
+struct ClipboardReadWindow(HWND);
+impl Drop for ClipboardReadWindow {
+    fn drop(&mut self) {
+        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.0) };
+    }
+}
+
+pub(crate) fn read_text_from_clipboard() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    };
+    let owner = ClipboardReadWindow(
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                windows::core::w!("STATIC"),
+                None,
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .ok()?,
+    );
+    // Another application may briefly own the clipboard lock. Retry only on
+    // this background path; synchronous callers retain their existing behavior.
+    let _clip = (0..10).find_map(|attempt| {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unsafe { OpenClipboard(Some(owner.0)) }
+            .ok()
+            .map(|()| ClipboardGuard)
+    })?;
+    // Do not request image formats or delayed image rendering for a text paste.
+    get_clipboard_string(CF_UNICODETEXT.0 as u32).filter(|text| !text.is_empty())
+}
+
 pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
     let _clip = ClipboardGuard::open()?;
 

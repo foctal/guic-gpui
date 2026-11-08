@@ -130,6 +130,6 @@ x11rb = { version = "0.13.1", features = [
     "sync",
     "dri3",
 ], optional = true }
-# WARNING: If you change this, you must also publish a new version of zed-xim to crates.io
+# Uses the GPUI-specific XIM fork.
 xim = { package = "zed-xim", version = "=0.4.0-zed", features = ["x11rb-xcb", "x11rb-client"], optional = true }
 x11-clipboard = { version = "0.9.3", optional = true }

@@ -80,12 +80,10 @@ impl<T> PriorityQueueState<T> {
     fn recv<'a>(&'a self) -> Result<parking_lot::MutexGuard<'a, PriorityQueues<T>>, RecvError> {
         let mut queues = self.queues.lock();
 
-        let sender_count = self.sender_count.load(std::sync::atomic::Ordering::Relaxed);
-        if queues.is_empty() && sender_count == 0 {
-            return Err(crate::queue::RecvError);
-        }
-
         while queues.is_empty() {
+            if self.sender_count.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                return Err(RecvError);
+            }
             self.condvar.wait(&mut queues);
         }
 
@@ -155,9 +153,17 @@ impl<T> PriorityQueueSender<T> {
 
 impl<T> Drop for PriorityQueueSender<T> {
     fn drop(&mut self) {
-        self.state
+        if self
+            .state
             .sender_count
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            // Synchronize with the empty/disconnected check before a receiver
+            // waits, so closing the queue cannot lose its wakeup.
+            let _queues = self.state.queues.lock();
+            self.state.condvar.notify_all();
+        }
     }
 }
 
@@ -280,7 +286,7 @@ impl<T> PriorityQueueReceiver<T> {
     /// Pops an element from the priority queue blocking if necessary.
     ///
     /// This method is best suited if you only intend to pop one element, for better performance
-    /// on large queues see [`Self::iter``]
+    /// on large queues see [`Self::iter`]
     ///
     /// # Errors
     ///
@@ -384,7 +390,7 @@ impl<T> Iterator for TryIter<T> {
         }
 
         let res = self.receiver.try_pop();
-        self.ended = res.is_err();
+        self.ended = !matches!(res, Ok(Some(_)));
 
         res.transpose()
     }
@@ -396,6 +402,56 @@ mod tests {
     use collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn dropping_sender_wakes_all_blocked_receivers() {
+        use std::{
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let (tx, rx) = PriorityQueueReceiver::<usize>::new();
+        let state = Arc::clone(&rx.state);
+        let (completed, completion) = mpsc::channel();
+        let threads: Vec<_> = [rx.clone(), rx]
+            .into_iter()
+            .map(|mut rx| {
+                let completed = completed.clone();
+                thread::spawn(move || completed.send(rx.pop().is_err()).unwrap())
+            })
+            .collect();
+        // Wait until both receivers have entered the condition variable. The
+        // wakeups also exercise rechecking disconnection after a spurious wake.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if state.condvar.notify_all() == 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "receivers did not start waiting");
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(tx);
+        for _ in 0..2 {
+            assert!(
+                completion
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("receiver did not wake")
+            );
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn try_iterator_stays_exhausted_after_empty_queue() {
+        let (tx, rx) = PriorityQueueReceiver::new();
+        let mut iter = rx.try_iter();
+        assert!(iter.next().is_none());
+        tx.send(Priority::Medium, 1).unwrap();
+        assert!(iter.next().is_none());
+    }
 
     #[test]
     fn all_tasks_get_yielded() {

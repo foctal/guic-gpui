@@ -1055,6 +1055,46 @@ mod tests {
         Ok(text_system.layout_line(text, gpui::px(14.0), &runs))
     }
 
+    #[test]
+    fn background_layout_matches_foreground_with_shared_native_fonts() {
+        let platform = std::sync::Arc::new(text_system().expect("fixture fonts"));
+        let shared = std::sync::Arc::new(gpui::TextSystem::new(platform));
+        let shape = |system: &gpui::WindowTextSystem, index| {
+            let text: gpui::SharedString =
+                format!("let value_{index} = \"日本🙂 e\u{301}\";").into();
+            system.shape_line(
+                text.clone(),
+                gpui::px(13.0),
+                &[gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font("IBM Plex Sans"),
+                    ..Default::default()
+                }],
+                None,
+            )
+        };
+        let baseline_system = gpui::WindowTextSystem::new(shared.clone());
+        let baseline = (0..32)
+            .map(|index| {
+                let line = shape(&baseline_system, index);
+                (line.len(), line.width())
+            })
+            .collect::<Vec<_>>();
+        let check = || {
+            let system = gpui::WindowTextSystem::new(shared.clone());
+            for (index, expected) in baseline.iter().enumerate() {
+                let line = shape(&system, index);
+                assert_eq!((line.len(), line.width()), *expected);
+                assert!(line.width() > gpui::px(0.0));
+            }
+        };
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(&check);
+            check();
+            worker.join().expect("background shaping succeeds");
+        });
+    }
+
     /// Mirrors the original crash: mixed-direction text reaching the shaper
     /// through `shape_text`, which only splits lines on `\n`.
     #[test]

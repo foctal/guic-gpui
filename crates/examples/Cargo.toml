@@ -11,6 +11,9 @@ gpui.workspace = true
 gpui_macros.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["inspector"] }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen.workspace = true
 
@@ -20,3 +23,11 @@ workspace = true
 [[test]]
 name = "derive_context"
 path = "macro_tests/derive_context.rs"
+
+[[test]]
+name = "render_test"
+path = "macro_tests/render_test.rs"
+
+[[test]]
+name = "derive_inspector_reflection"
+path = "macro_tests/derive_inspector_reflection.rs"

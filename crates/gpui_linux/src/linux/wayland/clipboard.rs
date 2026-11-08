@@ -30,7 +30,7 @@ pub(crate) struct Clipboard {
     self_mime: String,
 
     // Internal clipboard
-    contents: Option<ClipboardItem>,
+    contents: Option<std::sync::Arc<ClipboardItem>>,
     file_operation: Option<gpui::FileClipboardOperation>,
     primary_contents: Option<ClipboardItem>,
 
@@ -78,6 +78,18 @@ impl<T: ReceiveData> DataOffer<T> {
 
     fn has_mime_type(&self, mime_type: &str) -> bool {
         self.mime_types.iter().any(|t| t == mime_type)
+    }
+
+    fn receive_text(&self) -> Option<filedescriptor::FileDescriptor> {
+        let mime = TEXT_MIME_TYPES
+            .iter()
+            .find(|mime| self.has_mime_type(mime))?;
+        let pipe = Pipe::new().ok()?;
+        self.inner.receive_data((*mime).to_string(), unsafe {
+            BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
+        });
+        drop(pipe.write);
+        Some(pipe.read)
     }
 
     fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
@@ -161,7 +173,7 @@ impl Clipboard {
     }
 
     pub fn set(&mut self, item: ClipboardItem) {
-        self.contents = Some(item);
+        self.contents = Some(std::sync::Arc::new(item));
         self.file_operation = None;
     }
 
@@ -170,9 +182,9 @@ impl Clipboard {
         paths: gpui::ExternalPaths,
         operation: gpui::FileClipboardOperation,
     ) {
-        self.contents = Some(ClipboardItem {
+        self.contents = Some(std::sync::Arc::new(ClipboardItem {
             entries: vec![ClipboardEntry::ExternalPaths(paths)],
-        });
+        }));
         self.file_operation = Some(operation);
     }
 
@@ -236,6 +248,31 @@ impl Clipboard {
         }
     }
 
+    pub fn read_text_async(
+        &self,
+        executor: &gpui::BackgroundExecutor,
+    ) -> gpui::Task<Option<String>> {
+        let Some(offer) = &self.current_offer else {
+            return gpui::Task::ready(None);
+        };
+        if offer.has_mime_type(&self.self_mime) {
+            let contents = self.contents.clone();
+            return executor.spawn(async move { contents.and_then(|item| item.plain_text()) });
+        }
+        // Capture and request the current offer on the event-loop thread. Only
+        // the pipe transfer and UTF-8 decoding move to the background executor.
+        let Some(fd) = offer.receive_text() else {
+            return gpui::Task::ready(None);
+        };
+        if let Err(error) = self.connection.flush()
+            && !matches!(error, wayland_client::backend::WaylandError::Io(ref error)
+                if error.kind() == ErrorKind::WouldBlock)
+        {
+            return gpui::Task::ready(None);
+        }
+        executor.spawn(async move { read_received_text(fd) })
+    }
+
     pub fn read(&mut self) -> Option<ClipboardItem> {
         let offer = self.current_offer.as_ref()?;
         if let Some(cached) = self.cached_read.clone() {
@@ -243,7 +280,7 @@ impl Clipboard {
         }
 
         if offer.has_mime_type(&self.self_mime) {
-            return self.contents.clone();
+            return self.contents.as_deref().cloned();
         }
 
         let item = offer
@@ -273,31 +310,95 @@ impl Clipboard {
     }
 
     pub fn send_bytes(&self, fd: OwnedFd, bytes: Vec<u8>) {
+        // Readiness only guarantees space for some bytes. A blocking descriptor
+        // can stall the event loop when the recipient stops draining a large paste.
+        let mut fd = filedescriptor::FileDescriptor::new(File::from(fd));
+        if let Err(error) = fd.set_non_blocking(true) {
+            log::error!("failed to prepare clipboard pipe: {error}");
+            return;
+        }
         let mut written = 0;
-        self.loop_handle
-            .insert_source(
-                calloop::generic::Generic::new(
-                    File::from(fd),
-                    calloop::Interest::WRITE,
-                    calloop::Mode::Level,
-                ),
-                move |_, file, _| {
-                    let file = unsafe { file.get_mut() };
-                    loop {
-                        match file.write(&bytes[written..]) {
-                            Ok(n) if written + n == bytes.len() => {
-                                written += n;
-                                break Ok(PostAction::Remove);
-                            }
-                            Ok(n) => written += n,
-                            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                                break Ok(PostAction::Continue);
-                            }
-                            Err(_) => break Ok(PostAction::Remove),
+        if let Err(error) = self.loop_handle.insert_source(
+            calloop::generic::Generic::new(fd, calloop::Interest::WRITE, calloop::Mode::Level),
+            move |_, file, _| {
+                let file = unsafe { file.get_mut() };
+                loop {
+                    match file.write(&bytes[written..]) {
+                        Ok(0) => break Ok(PostAction::Remove),
+                        Ok(n) if written + n == bytes.len() => {
+                            written += n;
+                            break Ok(PostAction::Remove);
                         }
+                        Ok(n) => written += n,
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            break Ok(PostAction::Continue);
+                        }
+                        Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                        Err(_) => break Ok(PostAction::Remove),
                     }
-                },
-            )
-            .unwrap();
+                }
+            },
+        ) {
+            log::error!("failed to register clipboard pipe: {error}");
+        }
+    }
+}
+
+fn read_received_text(fd: filedescriptor::FileDescriptor) -> Option<String> {
+    let bytes = read_fd_with_timeout(fd, PIPE_READ_TIMEOUT).ok()?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
+#[cfg(test)]
+mod text_read_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Receiver {
+        writer: RefCell<Option<File>>,
+        mime: RefCell<Option<String>>,
+    }
+    impl ReceiveData for Receiver {
+        fn receive_data(&self, mime_type: String, fd: BorrowedFd<'_>) {
+            *self.writer.borrow_mut() =
+                Some(File::from(fd.try_clone_to_owned().expect("duplicate pipe")));
+            *self.mime.borrow_mut() = Some(mime_type);
+        }
+    }
+
+    #[test]
+    fn text_offer_prepares_without_waiting_for_data_and_preserves_unicode() {
+        let mut offer = DataOffer::new(Receiver::default());
+        offer.add_mime_type("image/png".into());
+        offer.add_mime_type("text/plain".into());
+        let fd = offer.receive_text().expect("text pipe");
+        // No data exists yet. Preparation must return without reading the pipe.
+        assert_eq!(offer.inner.mime.borrow().as_deref(), Some("text/plain"));
+        let mut writer = offer.inner.writer.borrow_mut().take().expect("writer");
+        drop(offer);
+        let text = "日本語🙂e\u{301}\r\n".repeat(20_000);
+        let bytes = text.clone().into_bytes();
+        let sender = std::thread::spawn(move || writer.write_all(&bytes).expect("send text"));
+        let reader = std::thread::spawn(move || read_received_text(fd));
+        sender.join().expect("sender");
+        assert_eq!(reader.join().expect("reader"), Some(text));
+    }
+
+    #[test]
+    fn nontext_offers_and_invalid_or_empty_utf8_return_none() {
+        let mut offer = DataOffer::new(Receiver::default());
+        offer.add_mime_type("image/png".into());
+        assert!(offer.receive_text().is_none());
+        assert!(offer.inner.writer.borrow().is_none());
+        for bytes in [vec![], vec![0xff]] {
+            let pipe = Pipe::new().expect("pipe");
+            let mut writer = pipe.write;
+            writer.write_all(&bytes).expect("write");
+            drop(writer);
+            assert_eq!(read_received_text(pipe.read), None);
+        }
     }
 }

@@ -18,7 +18,6 @@ use futures::{
     channel::oneshot,
     future::{LocalBoxFuture, Shared},
 };
-use itertools::Itertools;
 use parking_lot::RwLock;
 use slotmap::SlotMap;
 
@@ -415,8 +414,8 @@ impl SystemWindowTabController {
             .find_map(|(group, tabs)| tabs.iter().find(|tab| tab.id == id).map(|_| group));
 
         let current_group = current_group?;
-        // TODO: `.keys()` returns arbitrary order, what does "next" mean?
         let mut group_ids: Vec<_> = controller.tab_groups.keys().collect();
+        group_ids.sort_unstable();
         let idx = group_ids.iter().position(|g| *g == current_group)?;
         let next_idx = (idx + 1) % group_ids.len();
 
@@ -440,8 +439,8 @@ impl SystemWindowTabController {
             .find_map(|(group, tabs)| tabs.iter().find(|tab| tab.id == id).map(|_| group));
 
         let current_group = current_group?;
-        // TODO: `.keys()` returns arbitrary order, what does "previous" mean?
         let mut group_ids: Vec<_> = controller.tab_groups.keys().collect();
+        group_ids.sort_unstable();
         let idx = group_ids.iter().position(|g| *g == current_group)?;
         let prev_idx = if idx == 0 {
             group_ids.len() - 1
@@ -536,37 +535,55 @@ impl SystemWindowTabController {
         }
     }
 
-    /// Insert a tab into a tab group.
-    pub fn add_tab(cx: &mut App, id: WindowId, tabs: Vec<SystemWindowTab>) {
-        let mut controller = cx.global_mut::<SystemWindowTabController>();
-        let Some(tab) = tabs.iter().find(|tab| tab.id == id).cloned() else {
+    fn next_group_id(&self) -> usize {
+        self.tab_groups
+            .keys()
+            .max()
+            .map_or(Some(0), |id| id.checked_add(1))
+            .unwrap_or_else(|| (0..).find(|id| !self.tab_groups.contains_key(id)).unwrap())
+    }
+
+    /// Reconcile a native tab group snapshot, preserving its tab order.
+    pub fn add_tab(cx: &mut App, id: WindowId, mut tabs: Vec<SystemWindowTab>) {
+        if !tabs.iter().any(|tab| tab.id == id) {
             return;
-        };
-
-        let mut expected_tab_ids: Vec<_> = tabs
-            .iter()
-            .filter(|tab| tab.id != id)
-            .map(|tab| tab.id)
-            .sorted()
+        }
+        let controller = cx.global_mut::<SystemWindowTabController>();
+        let mut incoming_ids = FxHashSet::default();
+        tabs.retain(|tab| incoming_ids.insert(tab.id));
+        let previous_activity: FxHashMap<_, _> = controller
+            .tab_groups
+            .values()
+            .flatten()
+            .map(|tab| (tab.id, tab.last_active_at))
             .collect();
-
-        let mut tab_group_id = None;
-        for (group_id, group_tabs) in &controller.tab_groups {
-            let tab_ids: Vec<_> = group_tabs.iter().map(|tab| tab.id).sorted().collect();
-            if tab_ids == expected_tab_ids {
-                tab_group_id = Some(*group_id);
-                break;
+        for tab in &mut tabs {
+            if let Some(previous) = previous_activity.get(&tab.id) {
+                tab.last_active_at = *previous;
             }
         }
 
-        if let Some(tab_group_id) = tab_group_id {
-            if let Some(tabs) = controller.tab_groups.get_mut(&tab_group_id) {
-                tabs.push(tab);
-            }
-        } else {
-            let new_group_id = controller.tab_groups.len();
-            controller.tab_groups.insert(new_group_id, tabs);
-        }
+        // Reuse a complete group or the group this tab has just joined. A partial
+        // overlap needs a new group so that unreported tabs keep their own group.
+        let group_id = controller
+            .tab_groups
+            .iter()
+            .filter(|(_, group)| {
+                let ids: FxHashSet<_> = group.iter().map(|tab| tab.id).collect();
+                ids == incoming_ids
+                    || (ids.len() + 1 == incoming_ids.len()
+                        && !ids.contains(&id)
+                        && ids.is_subset(&incoming_ids))
+            })
+            .map(|(id, _)| *id)
+            .min()
+            .unwrap_or_else(|| controller.next_group_id());
+
+        controller.tab_groups.retain(|_, group| {
+            group.retain(|tab| !incoming_ids.contains(&tab.id));
+            !group.is_empty()
+        });
+        controller.tab_groups.insert(group_id, tabs);
     }
 
     /// Remove a tab from a tab group.
@@ -590,7 +607,7 @@ impl SystemWindowTabController {
         let mut controller = cx.global_mut::<SystemWindowTabController>();
 
         if let Some(tab) = removed_tab {
-            let new_group_id = controller.tab_groups.keys().max().map_or(0, |k| k + 1);
+            let new_group_id = controller.next_group_id();
             controller.tab_groups.insert(new_group_id, vec![tab]);
         }
     }
@@ -602,12 +619,12 @@ impl SystemWindowTabController {
             return;
         };
 
-        let initial_tabs_len = initial_tabs.len();
         let mut all_tabs = initial_tabs.clone();
-
-        for (_, mut tabs) in controller.tab_groups.drain() {
-            tabs.retain(|tab| !all_tabs[..initial_tabs_len].contains(tab));
-            all_tabs.extend(tabs);
+        let mut seen: FxHashSet<_> = all_tabs.iter().map(|tab| tab.id).collect();
+        let mut groups: Vec<_> = controller.tab_groups.drain().collect();
+        groups.sort_unstable_by_key(|(id, _)| *id);
+        for (_, tabs) in groups {
+            all_tabs.extend(tabs.into_iter().filter(|tab| seen.insert(tab.id)));
         }
 
         controller.tab_groups.insert(0, all_tabs);
@@ -1367,6 +1384,21 @@ impl App {
     /// Reads data from the platform clipboard.
     pub fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.platform.read_from_clipboard()
+    }
+
+    /// Reads plain clipboard text asynchronously on the desktop backends.
+    ///
+    /// Returns `None` for empty, unavailable, or unsupported text. Images,
+    /// file lists, and application metadata are not requested. Line endings
+    /// are preserved; callers decide whether to normalize them.
+    ///
+    /// The clipboard may change before the native request is serviced. Callers
+    /// must preserve input order and reject results for obsolete edit targets.
+    /// Dropping the task ignores its result; an in-flight OS transfer may finish.
+    /// The default implementation for custom backends uses their synchronous
+    /// read method; override `Platform::read_text_from_clipboard_async` to avoid it.
+    pub fn read_text_from_clipboard_async(&self) -> Task<Option<String>> {
+        self.platform.read_text_from_clipboard_async()
     }
 
     /// Sets the text rendering mode for the application.
@@ -3081,5 +3113,108 @@ mod test {
         });
 
         assert_eq!(*observation_count.borrow(), 2);
+    }
+}
+
+#[cfg(test)]
+mod system_window_tab_tests {
+    use super::*;
+
+    fn tab(cx: &mut TestAppContext, title: &'static str) -> SystemWindowTab {
+        let handle = cx.add_window(|_, _| crate::Empty);
+        SystemWindowTab::new(title.into(), handle.into())
+    }
+
+    #[crate::test]
+    fn replacing_removed_groups_preserves_other_windows(cx: &mut TestAppContext) {
+        let tabs: Vec<_> = ["a", "b", "c", "d"].map(|name| tab(cx, name)).into();
+        cx.update(|cx| {
+            for tab in &tabs[..3] {
+                SystemWindowTabController::add_tab(cx, tab.id, vec![tab.clone()]);
+            }
+            SystemWindowTabController::remove_tab(cx, tabs[1].id);
+            SystemWindowTabController::add_tab(cx, tabs[3].id, vec![tabs[3].clone()]);
+            let controller = cx.global::<SystemWindowTabController>();
+            assert!(controller.tabs(tabs[0].id).is_some());
+            assert!(controller.tabs(tabs[2].id).is_some());
+            assert!(controller.tabs(tabs[3].id).is_some());
+            assert_eq!(controller.tab_groups.len(), 3);
+        });
+    }
+
+    #[crate::test]
+    fn native_tab_snapshots_are_idempotent_and_preserve_native_order(cx: &mut TestAppContext) {
+        let a = tab(cx, "a");
+        let b = tab(cx, "b");
+        let c = tab(cx, "c");
+        cx.update(|cx| {
+            SystemWindowTabController::add_tab(cx, a.id, vec![a.clone()]);
+            SystemWindowTabController::add_tab(cx, b.id, vec![b.clone(), a.clone()]);
+            SystemWindowTabController::add_tab(cx, b.id, vec![b.clone(), a.clone()]);
+            let controller = cx.global::<SystemWindowTabController>();
+            assert_eq!(controller.tab_groups.len(), 1);
+            assert_eq!(
+                controller
+                    .tabs(a.id)
+                    .unwrap()
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>(),
+                vec![b.id, a.id]
+            );
+            let previous_activity = controller.tabs(a.id).unwrap()[1].last_active_at;
+            let mut refreshed_a = a.clone();
+            refreshed_a.last_active_at += std::time::Duration::from_secs(1);
+            SystemWindowTabController::add_tab(cx, c.id, vec![refreshed_a, c.clone(), c.clone()]);
+            let controller = cx.global::<SystemWindowTabController>();
+            assert_eq!(controller.tabs(b.id).unwrap().len(), 1);
+            assert_eq!(
+                controller.tabs(a.id).unwrap()[0].last_active_at,
+                previous_activity
+            );
+            assert_eq!(
+                controller
+                    .tabs(a.id)
+                    .unwrap()
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>(),
+                vec![a.id, c.id]
+            );
+        });
+    }
+
+    #[crate::test]
+    fn group_navigation_and_merge_follow_stable_group_order(cx: &mut TestAppContext) {
+        let tabs: Vec<_> = ["a", "b", "c", "d"].map(|name| tab(cx, name)).into();
+        cx.update(|cx| {
+            for tab in &tabs {
+                SystemWindowTabController::add_tab(cx, tab.id, vec![tab.clone()]);
+            }
+            for index in 0..tabs.len() {
+                assert_eq!(
+                    SystemWindowTabController::get_next_tab_group_window(cx, tabs[index].id)
+                        .unwrap()
+                        .window_id(),
+                    tabs[(index + 1) % tabs.len()].id
+                );
+                assert_eq!(
+                    SystemWindowTabController::get_prev_tab_group_window(cx, tabs[index].id)
+                        .unwrap()
+                        .window_id(),
+                    tabs[(index + tabs.len() - 1) % tabs.len()].id
+                );
+            }
+            SystemWindowTabController::merge_all_windows(cx, tabs[2].id);
+            assert_eq!(
+                cx.global::<SystemWindowTabController>()
+                    .tabs(tabs[2].id)
+                    .unwrap()
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>(),
+                vec![tabs[2].id, tabs[0].id, tabs[1].id, tabs[3].id]
+            );
+        });
     }
 }

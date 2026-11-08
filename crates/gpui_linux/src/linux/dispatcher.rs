@@ -60,8 +60,13 @@ impl LinuxDispatcher {
 
                 let handle = event_loop.handle();
                 let timer_handle = event_loop.handle();
+                let signal = event_loop.get_signal();
                 handle
                     .insert_source(timer_channel, move |e, _, _| {
+                        if let channel::Event::Closed = e {
+                            signal.stop();
+                            return;
+                        }
                         if let channel::Event::Msg(timer) = e {
                             let mut runnable = Some(timer.runnable);
                             timer_handle
@@ -159,17 +164,20 @@ impl PlatformDispatcher for LinuxDispatcher {
 }
 
 pub struct PriorityQueueCalloopSender<T> {
-    sender: PriorityQueueSender<T>,
+    sender: Option<PriorityQueueSender<T>>,
     ping: calloop::ping::Ping,
 }
 
 impl<T> PriorityQueueCalloopSender<T> {
     fn new(tx: PriorityQueueSender<T>, ping: calloop::ping::Ping) -> Self {
-        Self { sender: tx, ping }
+        Self {
+            sender: Some(tx),
+            ping,
+        }
     }
 
     fn send(&self, priority: Priority, item: T) -> Result<(), gpui::queue::SendError<T>> {
-        let res = self.sender.send(priority, item);
+        let res = self.sender.as_ref().unwrap().send(priority, item);
         if res.is_ok() {
             self.ping.ping();
         }
@@ -179,6 +187,9 @@ impl<T> PriorityQueueCalloopSender<T> {
 
 impl<T> Drop for PriorityQueueCalloopSender<T> {
     fn drop(&mut self) {
+        // Publish disconnection before waking the event loop. Otherwise it can
+        // consume the ping while the queue still appears connected.
+        drop(self.sender.take());
         self.ping.ping();
     }
 }
@@ -304,6 +315,25 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_dispatcher_stops_idle_workers_and_timer_thread() {
+        let (sender, _receiver) = PriorityQueueCalloopReceiver::new();
+        let mut dispatcher = LinuxDispatcher::new(sender);
+        let threads = std::mem::take(&mut dispatcher._background_threads);
+        drop(dispatcher);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while threads.iter().any(|thread| !thread.is_finished()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dispatcher threads did not stop"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
 
     #[test]
     fn calloop_works() {
