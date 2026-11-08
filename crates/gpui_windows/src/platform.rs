@@ -1552,6 +1552,113 @@ mod tests {
     use gpui::ClipboardItem;
 
     #[test]
+    #[ignore = "requires an unobscured interactive Windows desktop and Direct3D device"]
+    fn native_child_window_stays_above_direct_composition() -> anyhow::Result<()> {
+        use super::*;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows::Win32::Graphics::Dwm::DwmFlush;
+
+        struct Background;
+        impl Render for Background {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().size_full().bg(rgb(0x0000ff))
+            }
+        }
+
+        let pixels = Rc::new(Cell::new(None));
+        let result = pixels.clone();
+        Application::with_platform(Rc::new(WindowsPlatform::new(false)?)).run(move |cx| {
+            cx.open_window(
+                WindowOptions {
+                    windows_composition: WindowsCompositionMode::DirectComposition,
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(100.), px(100.)),
+                        size(px(320.), px(240.)),
+                    ))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let RawWindowHandle::Win32(handle) =
+                        HasWindowHandle::window_handle(window).unwrap().as_raw()
+                    else {
+                        panic!("expected a Windows handle");
+                    };
+                    let parent = HWND(handle.hwnd.get() as _);
+                    let child = unsafe {
+                        CreateWindowExW(
+                            WS_EX_NOREDIRECTIONBITMAP,
+                            w!("STATIC"),
+                            w!(""),
+                            WS_VISIBLE | WS_CHILD,
+                            40,
+                            40,
+                            80,
+                            80,
+                            Some(parent),
+                            None,
+                            None,
+                            None,
+                        )
+                    }
+                    .expect("create native child");
+                    // Model a composition-backed child such as WebView2. A GDI
+                    // child instead requires the redirection-bitmap host mode.
+                    let devices = crate::directx_devices::DirectXDevices::new().unwrap();
+                    let mut child_renderer =
+                        crate::directx_renderer::DirectXRenderer::new(child, &devices, false)
+                            .unwrap();
+                    child_renderer
+                        .resize(size(DevicePixels(80), DevicePixels(80)))
+                        .unwrap();
+                    child_renderer
+                        .draw(&Scene::default(), WindowBackgroundAppearance::Opaque)
+                        .unwrap();
+                    unsafe {
+                        SetWindowPos(
+                            parent,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE,
+                        )
+                        .unwrap();
+                    }
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+                        cx.update(|cx| {
+                            let mut origin = POINT { x: 0, y: 0 };
+                            unsafe {
+                                let _ = DwmFlush();
+                                let _ = ClientToScreen(parent, &mut origin);
+                                let screen = GetDC(None);
+                                result.set(Some((
+                                    GetPixel(screen, origin.x + 10, origin.y + 100).0,
+                                    GetPixel(screen, origin.x + 70, origin.y + 70).0,
+                                )));
+                                ReleaseDC(None, screen);
+                                drop(child_renderer);
+                                let _ = DestroyWindow(child);
+                            }
+                            cx.quit();
+                        });
+                    })
+                    .detach();
+                    cx.new(|_| Background)
+                },
+            )
+            .expect("create window and renderer");
+        });
+        // COLORREF uses BGR byte order. The blue scene must be rendered while
+        // the white native child remains visible above it.
+        assert_eq!(pixels.get(), Some((0x00ff0000, 0x00ffffff)));
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires a Windows desktop and Direct3D device"]
     fn native_windows_can_mix_composition_modes() -> anyhow::Result<()> {
         use super::*;
