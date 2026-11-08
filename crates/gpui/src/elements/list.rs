@@ -714,7 +714,7 @@ impl ListState {
         if let Some(&ListItem::Measured { size, .. }) = cursor.item() {
             let &Dimensions(Count(count), Height(top), _) = cursor.start();
             if count == ix {
-                let top = bounds.top() + top - scroll_top;
+                let top = bounds.top() + padding.top + top - scroll_top;
                 return Some(Bounds::from_corners(
                     point(bounds.left() + padding.left, top),
                     point(bounds.right() - padding.right, top + size.height),
@@ -868,7 +868,8 @@ impl StateInner {
         let height = self
             .scrollbar_drag_start_height
             .unwrap_or_else(|| self.items.summary().height);
-        (height - bounds.size.height).max(px(0.))
+        let padding = self.last_padding.unwrap_or_default();
+        (height + padding.top + padding.bottom - bounds.size.height).max(px(0.))
     }
 
     fn visible_range(
@@ -1937,6 +1938,9 @@ mod test {
                 .pl(px(6.))
                 .border_r_8()
                 .pr(px(22.))
+                .border_t_2()
+                .pt(px(5.))
+                .pb(px(3.))
                 .w_full()
                 .h_full()
             }
@@ -1956,11 +1960,13 @@ mod test {
             assert_eq!(bounds.origin.x, px(10.));
             assert_eq!(bounds.size.width, px(60.));
         }
-        assert_eq!(state.max_offset_for_scrollbar().y, px(200.));
+        assert_eq!(state.max_offset_for_scrollbar().y, px(210.));
 
         let reported_bounds = state.bounds_for_item(0).expect("item 0 should be measured");
-        assert_eq!(reported_bounds.origin.x, px(10.));
-        assert_eq!(reported_bounds.size.width, px(60.));
+        assert_eq!(reported_bounds, painted_bounds[0]);
+        state.set_offset_from_scrollbar(point(px(0.), px(-210.)));
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-210.));
+        assert_eq!(state.is_scrolled_to_end(), Some(true));
     }
 
     #[gpui::test]
