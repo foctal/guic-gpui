@@ -23,16 +23,31 @@ gpui_platform = { package = "guic-gpui-platform", version = "0.5.0", features = 
 gpui_platform = { package = "guic-gpui-platform", version = "0.5.0" }
 ```
 
+## Building and examples
+
+Use Rust 1.95 or later. This repository pins Rust 1.95.0 for development.
+
+- macOS: Install Xcode and its Metal toolchain. Enable `runtime_shaders` on
+  `gpui_platform` to compile Metal shaders at application startup instead.
+- Windows: Install the Windows SDK. Release builds require `fxc.exe`, found
+  through the SDK installation, `PATH`, or `GPUI_FXC_PATH`.
+- Linux: Install the Fontconfig, Wayland, XKB, X11/XCB development libraries for
+  the enabled backends. Rendering requires a GPU supported by WGPU.
+
+Run the desktop example with `cargo run -p guic-gpui-examples`.
+The [WebAssembly backend](crates/gpui_web/README.md) is experimental.
+
 ## Clipboard integration
 
 See [asynchronous text clipboard](docs/text-clipboard.md) for nonblocking desktop
 text reads and [native file clipboard](docs/file-clipboard.md) for file copy/move
 integration.
 
-## Upstream maintenance
+## Compatibility
 
-See [selected upstream fixes](docs/upstream-fixes.md) for adapted Zed GPUI fixes
-and their regression coverage.
+See [the changelog](CHANGELOG.md) for API changes and migration notes. Windows
+native controls and compositor behavior are described in
+[platform integration](docs/upstream-fixes.md).
 
 ## License
 

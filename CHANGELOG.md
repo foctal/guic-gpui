@@ -4,23 +4,49 @@ All notable user-visible changes are recorded here.
 
 ## Unreleased
 
-- Add `App::read_text_from_clipboard_async()` for background plain-text clipboard
-  acquisition on macOS, Windows, X11, and Wayland. Preserve the synchronous API
-  and provide a compatibility fallback for custom platform implementations.
+### Compatibility
+
+- Add `windows_composition` to `WindowOptions` and `WindowParams`. Exhaustive
+  struct literals must supply the field; `WindowOptions` literals using
+  `..Default::default()` remain compatible. Use `WindowsCompositionMode::Auto`
+  to preserve the previous behavior. The setting is ignored outside Windows.
+
+### Added
+
+- Add `App::read_text_from_clipboard_async()` for background plain-text reads
+  on macOS, Windows, X11, and Wayland. Custom platform implementations retain a
+  synchronous fallback. See [text clipboard integration](docs/text-clipboard.md).
 - Add `ClipboardItem::plain_text()` to extract text without file-path fallback.
-- Cover asynchronous clipboard reads, cancellation, non-text data, Unicode
-  transfer, and Windows clipboard contention; run native macOS and X11 text
-  clipboard tests in CI.
+- Add per-window Windows composition modes. `RedirectionBitmap` supports native
+  menus and GDI child controls; `DirectComposition` overrides the process-wide
+  environment setting.
 
-- Test concurrent foreground/background text layout with shared native font
-  services on Core Text, DirectWrite, and Cosmic Text backends.
+### Fixed
 
-- Windows: Pass restart executable paths through the helper's environment, so
-  Unicode paths, quotes, dollar signs, and backticks are never interpreted as
-  PowerShell source. Clear the temporary variable before relaunching and start
-  the helper without user profiles or interactive prompts.
-- Windows: Make unsupported hide/unhide-other-applications requests harmless
-  instead of panicking, consistent with the Linux backend.
+- Include padding and borders in list item measurement, placement, reported
+  bounds, and scrollbar limits. Remeasure items when the content width changes.
+- Wake blocked queue receivers when the sender disconnects and keep exhausted
+  iterators exhausted. Stop idle Linux dispatcher threads on shutdown.
+- Apply drag cursors immediately after mouse listeners run.
+- Preserve native window tab order and existing groups when reconciling tabs,
+  and make group navigation deterministic.
+- Distinguish file-dialog cancellation from failures on Windows and Linux.
+  Preserve native Windows paths and release Shell-allocated path strings.
+- macOS: Correct Backspace and Delete menu equivalents.
+- macOS: Reject noncontiguous Core Media buffers before constructing a byte
+  slice that would extend past the first memory block.
+- Wayland: Pair activation tokens with their original requests and input
+  surfaces, including keyboard activation and serial rollover.
+- Wayland: Keep clipboard writes nonblocking when recipients stop reading.
+- Windows: Place DirectComposition content below native child windows.
+- Windows: Pass restart paths through the helper's environment to preserve
+  native strings and prevent PowerShell interpretation.
+- Windows: Ignore unsupported hide/unhide-other-applications requests.
+- FreeBSD: Expose the task queue required by the platform dispatcher.
+- Web: Fix example dependency aliases and exclude native path conversion from
+  targets without filesystem path support.
+- Require Tokio 1.53.3 or later, addressing RUSTSEC-2026-0386, and replace the
+  yanked `async-executor` lockfile entry.
 
 ## [0.5.0] - 2026-11-02
 
