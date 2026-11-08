@@ -1823,7 +1823,7 @@ pub enum WindowsCompositionMode {
     Auto,
     /// Use DirectComposition, overriding the process-wide environment setting.
     DirectComposition,
-    /// Use a redirected window surface for native menus and child HWND controls.
+    /// Use a redirected window surface for native menus and GDI child controls.
     ///
     /// This disables DirectComposition for this window. Embedded WebViews still
     /// occupy a separate native layer and cannot be covered by GPUI overlays.
@@ -1882,7 +1882,7 @@ pub struct WindowOptions {
     pub window_background: WindowBackgroundAppearance,
 
     /// Windows rendering composition mode. Ignored on other platforms.
-    /// Use [`WindowsCompositionMode::RedirectionBitmap`] for native menus or child controls.
+    /// Use [`WindowsCompositionMode::RedirectionBitmap`] for native menus or GDI child controls.
     pub windows_composition: WindowsCompositionMode,
 
     /// Application identifier of the window. Can by used by desktop environments to group applications together.
@@ -2350,16 +2350,24 @@ impl crate::ExternalPaths {
 
     /// Serializes absolute file URLs for the `text/uri-list` clipboard format.
     /// Reserved characters, Unicode and line breaks are percent-encoded.
+    /// Returns [`FileClipboardError::Unsupported`] on targets without native paths.
     pub fn clipboard_uri_list(&self) -> std::result::Result<String, FileClipboardError> {
-        self.validate_for_clipboard()?;
-        let mut result = String::new();
-        for path in &self.0 {
-            let uri =
-                url::Url::from_file_path(path).map_err(|_| FileClipboardError::InvalidPaths)?;
-            result.push_str(uri.as_str());
-            result.push_str("\r\n");
+        #[cfg(not(any(unix, windows, target_os = "wasi")))]
+        {
+            Err(FileClipboardError::Unsupported)
         }
-        Ok(result)
+        #[cfg(any(unix, windows, target_os = "wasi"))]
+        {
+            self.validate_for_clipboard()?;
+            let mut result = String::new();
+            for path in &self.0 {
+                let uri =
+                    url::Url::from_file_path(path).map_err(|_| FileClipboardError::InvalidPaths)?;
+                result.push_str(uri.as_str());
+                result.push_str("\r\n");
+            }
+            Ok(result)
+        }
     }
 
     /// Serializes the GNOME file clipboard format, including copy or move intent.
