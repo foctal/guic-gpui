@@ -29,6 +29,11 @@ See [asynchronous text clipboard](docs/text-clipboard.md) for nonblocking deskto
 text reads and [native file clipboard](docs/file-clipboard.md) for file copy/move
 integration.
 
+## Upstream maintenance
+
+See [selected upstream fixes](docs/upstream-fixes.md) for adapted Zed GPUI fixes
+and their regression coverage.
+
 ## License
 
 The source is distributed under Apache-2.0. Bundled IBM Plex Sans and Lilex
