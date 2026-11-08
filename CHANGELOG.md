@@ -2,7 +2,7 @@
 
 All notable user-visible changes are recorded here.
 
-## Unreleased
+## [0.6.0] - 2026-11-08
 
 ### Compatibility
 
