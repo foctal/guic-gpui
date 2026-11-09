@@ -1101,6 +1101,7 @@ pub struct Window {
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
+    pending_bounds_change: Rc<Cell<bool>>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
@@ -1576,7 +1577,9 @@ impl Window {
                 .detach();
             }
         }));
+        let pending_bounds_change = Rc::new(Cell::new(false));
         platform_window.on_request_frame(Box::new({
+            let pending_bounds_change = pending_bounds_change.clone();
             let mut cx = cx.to_async();
             let invalidator = invalidator.clone();
             let active = active.clone();
@@ -1668,7 +1671,7 @@ impl Window {
                     || needs_present.get()
                     || input_rate_tracker.borrow_mut().is_high_rate();
 
-                if invalidator.is_dirty() || force_render {
+                if invalidator.is_dirty() || force_render || pending_bounds_change.get() {
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
@@ -1698,18 +1701,26 @@ impl Window {
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
+            let pending_bounds_change = pending_bounds_change.clone();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                // Native callbacks can arrive while App or this window is
+                // borrowed (for example, while constructing a child WebView).
+                // Keep the latest platform bounds pending until a draw can
+                // consume them if the immediate update cannot borrow App.
+                pending_bounds_change.set(true);
+                let _ = handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx));
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
+            let pending_bounds_change = pending_bounds_change.clone();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                // Native callbacks can arrive while App or this window is
+                // borrowed (for example, while constructing a child WebView).
+                // Keep the latest platform bounds pending until a draw can
+                // consume them if the immediate update cannot borrow App.
+                pending_bounds_change.set(true);
+                let _ = handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx));
             }
         }));
         platform_window.on_appearance_changed(Box::new({
@@ -1865,6 +1876,7 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
+            pending_bounds_change,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
             element_id_stack: SmallVec::default(),
@@ -2443,6 +2455,7 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
+        self.pending_bounds_change.set(false);
         self.scale_factor = self.platform_window.scale_factor();
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
@@ -2849,6 +2862,9 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        if self.pending_bounds_change.get() {
+            self.bounds_changed(cx);
+        }
         // Drain unconditionally so a stale first-invalidation timestamp can't
         // leak into a later frame across enable/disable of frame tracing.
         let frame_dirty = self.invalidator.take_frame_dirty();
@@ -7141,6 +7157,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_reentrant_resize_is_consumed_before_layout() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, _| crate::EmptyView);
+        let handle: AnyWindowHandle = window.into();
+        let mut native = cx.test_window(handle);
+        let final_size = size(px(640.), px(480.));
+        cx.update_window(handle, |_, window, cx| {
+            // Reproduce a native callback from a nested event loop while App
+            // and the window are already borrowed. Coalesce to the latest size.
+            native.simulate_resize(size(px(900.), px(700.)));
+            native.simulate_scale_factor_change(1.5);
+            native.simulate_resize(final_size);
+            window.draw(cx).clear(cx);
+            assert_eq!(window.viewport_size(), final_size);
+            assert_eq!(window.scale_factor(), 1.5);
+            assert_eq!(window.bounds().size, final_size);
+        })
+        .unwrap();
     }
 
     #[test]
