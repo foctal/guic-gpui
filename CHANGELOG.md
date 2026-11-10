@@ -2,6 +2,14 @@
 
 All notable user-visible changes are recorded here.
 
+## [0.6.1] - 2026-11-10
+
+### Fixed
+
+- Preserve window resize and move notifications that arrive reentrantly while
+  the application or window is borrowed. Apply the latest bounds and scale
+  factor before the next draw to prevent stale viewport sizes and layout.
+
 ## [0.6.0] - 2026-11-08
 
 ### Compatibility
