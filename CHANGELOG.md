@@ -2,6 +2,13 @@
 
 All notable user-visible changes are recorded here.
 
+## [Unreleased]
+
+### Fixed
+
+- Prevent opaque backgrounds from unexpectedly becoming transparent on Linux
+  with the VMware SVGA3D OpenGL renderer.
+
 ## [0.6.1] - 2026-11-10
 
 ### Fixed
