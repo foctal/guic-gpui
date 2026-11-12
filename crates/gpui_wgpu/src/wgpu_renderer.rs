@@ -146,6 +146,7 @@ pub struct WgpuRenderer {
     instance_buffer_capacity: u64,
     max_buffer_size: u64,
     storage_buffer_alignment: u64,
+    expanded_instance_binding_limit: Option<u64>,
     rendering_params: RenderingParameters,
     is_bgr: bool,
     dual_source_blending: bool,
@@ -381,8 +382,12 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        let adapter_info = context.adapter.get_info();
         let max_buffer_size = device.limits().max_buffer_size;
         let storage_buffer_alignment = device.limits().min_storage_buffer_offset_alignment as u64;
+        let expanded_instance_binding_limit = (adapter_info.backend == wgpu::Backend::Gl
+            && adapter_info.name.starts_with("SVGA3D"))
+        .then_some(device.limits().max_storage_buffer_binding_size);
         let initial_instance_buffer_capacity = 2 * 1024 * 1024;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance_buffer"),
@@ -437,8 +442,6 @@ impl WgpuRenderer {
             ],
         });
 
-        let adapter_info = context.adapter.get_info();
-
         let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let last_error_clone = Arc::clone(&last_error);
         device.on_uncaptured_error(Arc::new(move |error| {
@@ -476,6 +479,7 @@ impl WgpuRenderer {
             instance_buffer_capacity: initial_instance_buffer_capacity,
             max_buffer_size,
             storage_buffer_alignment,
+            expanded_instance_binding_limit,
             rendering_params,
             is_bgr: false,
             dual_source_blending,
@@ -1680,6 +1684,15 @@ impl WgpuRenderer {
     }
 
     fn instance_binding(&self, offset: u64, size: NonZeroU64) -> wgpu::BindingResource<'_> {
+        // SVGA3D can produce transparent quads when successive draws bind small
+        // ranges of the same storage buffer. Expose the available buffer tail on
+        // this adapter; draw counts still restrict access to each batch's data.
+        let size = instance_binding_size(
+            self.instance_buffer_capacity,
+            offset,
+            size,
+            self.expanded_instance_binding_limit,
+        );
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &self.resources().instance_buffer,
             offset,
@@ -1848,6 +1861,41 @@ impl WgpuRenderer {
 
         log::info!("GPU recovery complete");
         Ok(())
+    }
+}
+
+fn instance_binding_size(
+    capacity: u64,
+    offset: u64,
+    size: NonZeroU64,
+    expanded_limit: Option<u64>,
+) -> NonZeroU64 {
+    expanded_limit
+        .and_then(|limit| NonZeroU64::new((capacity - offset).min(limit)))
+        .filter(|expanded| *expanded >= size)
+        .unwrap_or(size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::instance_binding_size;
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn instance_binding_expansion_respects_buffer_and_device_limits() {
+        let size = NonZeroU64::new(160).unwrap();
+        assert_eq!(instance_binding_size(4096, 256, size, None), size);
+        assert_eq!(
+            instance_binding_size(4096, 256, size, Some(2048)).get(),
+            2048
+        );
+        assert_eq!(
+            instance_binding_size(4096, 3840, size, Some(2048)).get(),
+            256
+        );
+        assert_eq!(instance_binding_size(4096, 3936, size, Some(2048)), size);
+        // An oversized batch must retain its validation error, not be truncated.
+        assert_eq!(instance_binding_size(4096, 0, size, Some(128)), size);
     }
 }
 
