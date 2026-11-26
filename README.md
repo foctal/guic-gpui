@@ -11,16 +11,16 @@ started as a fork of Zed's GPUI.
 
 ```toml
 [dependencies]
-gpui = { package = "guic-gpui", version = "0.6.2" }
+gpui = { package = "guic-gpui", version = "0.7.0" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.6.2", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+gpui_platform = { package = "guic-gpui-platform", version = "0.7.0", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.6.2", features = ["font-kit"] }
+gpui_platform = { package = "guic-gpui-platform", version = "0.7.0", features = ["font-kit"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-gpui_platform = { package = "guic-gpui-platform", version = "0.6.2" }
+gpui_platform = { package = "guic-gpui-platform", version = "0.7.0" }
 ```
 
 ## Building and examples
