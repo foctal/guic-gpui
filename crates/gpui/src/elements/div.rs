@@ -33,7 +33,7 @@ use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
 use std::{
     any::{Any, TypeId},
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     fmt::Debug,
     marker::PhantomData,
@@ -664,14 +664,16 @@ impl Interactivity {
     where
         Self: Sized,
     {
-        debug_assert!(
-            self.tooltip_builder.is_none(),
-            "calling tooltip more than once on the same element is not supported"
-        );
-        self.tooltip_builder = Some(TooltipBuilder {
-            build: Rc::new(build_tooltip),
-            hoverable: false,
-        });
+        self.set_tooltip_builder(build_tooltip, TooltipBehavior::Fixed);
+    }
+
+    /// Shows a non-interactive tooltip that follows the pointer. Placement prefers
+    /// the visible source element and falls back to the window when space is limited.
+    pub fn cursor_tooltip(
+        &mut self,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) {
+        self.set_tooltip_builder(build_tooltip, TooltipBehavior::FollowCursor);
     }
 
     /// Use the given callback to construct a new tooltip view when the mouse hovers over this element.
@@ -683,13 +685,21 @@ impl Interactivity {
     ) where
         Self: Sized,
     {
+        self.set_tooltip_builder(build_tooltip, TooltipBehavior::Hoverable);
+    }
+
+    fn set_tooltip_builder(
+        &mut self,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+        behavior: TooltipBehavior,
+    ) {
         debug_assert!(
             self.tooltip_builder.is_none(),
             "calling tooltip more than once on the same element is not supported"
         );
         self.tooltip_builder = Some(TooltipBuilder {
             build: Rc::new(build_tooltip),
-            hoverable: true,
+            behavior,
         });
     }
 
@@ -1243,6 +1253,18 @@ pub trait InteractiveElement: Sized {
 /// A trait for elements that want to use the standard GPUI interactivity features
 /// that require state.
 pub trait StatefulInteractiveElement: InteractiveElement {
+    /// Tracks a primary-button drag that started on this element. The callback
+    /// receives the original press and each move after the drag threshold, even
+    /// outside the hitbox. Releasing after a drag suppresses the element's click.
+    /// Use a stable element ID to preserve the gesture across redraws.
+    fn on_drag_update(
+        mut self,
+        listener: impl Fn(&MouseDownEvent, &MouseMoveEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().drag_update = Some(Box::new(listener));
+        self
+    }
+
     /// Set the accessible role for this element.
     ///
     /// See the [accessibility guide](crate::_accessibility) for an overview.
@@ -1314,6 +1336,13 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         f: impl FnOnce(&mut crate::A11ySubtreeBuilder) + 'static,
     ) -> Self {
         self.interactivity().a11y_synthetic_children = Some(Box::new(f));
+        self
+    }
+
+    /// Exposes the disabled state to assistive technology. Event handlers
+    /// remain responsible for enforcing disabled behavior.
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = disabled;
         self
     }
 
@@ -1596,6 +1625,18 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Shows a tooltip that follows the pointer and prefers the visible bounds of this element.
+    fn cursor_tooltip(
+        mut self,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().cursor_tooltip(build_tooltip);
+        self
+    }
+
     /// Use the given callback to construct a new tooltip view when the mouse hovers over this element.
     /// The tooltip itself is also hoverable and won't disappear when the user moves the mouse into
     /// the tooltip. The fluent API equivalent to [`Interactivity::hoverable_tooltip`].
@@ -1653,9 +1694,16 @@ type DropListener = Box<dyn Fn(&dyn Any, &mut Window, &mut App) + 'static>;
 
 type CanDropPredicate = Box<dyn Fn(&dyn Any, &mut Window, &mut App) -> bool + 'static>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TooltipBehavior {
+    Fixed,
+    Hoverable,
+    FollowCursor,
+}
+
 pub(crate) struct TooltipBuilder {
     build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView + 'static>,
-    hoverable: bool,
+    behavior: TooltipBehavior,
 }
 
 pub(crate) type KeyDownListener =
@@ -1986,6 +2034,7 @@ pub(crate) struct AriaProperties {
     pub(crate) description: Option<SharedString>,
     pub(crate) keyshortcuts: Option<SharedString>,
     pub(crate) selected: Option<bool>,
+    pub(crate) disabled: bool,
     pub(crate) expanded: Option<bool>,
     pub(crate) toggled: Option<accesskit::Toggled>,
     pub(crate) numeric_value: Option<f64>,
@@ -2056,6 +2105,8 @@ pub struct Interactivity {
     pub(crate) click_listeners: Vec<ClickListener>,
     pub(crate) aux_click_listeners: Vec<ClickListener>,
     pub(crate) drag_listener: Option<DragListener>,
+    pub(crate) drag_update:
+        Option<Box<dyn Fn(&MouseDownEvent, &MouseMoveEvent, &mut Window, &mut App)>>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) tooltip_show_delay: Option<Duration>,
@@ -2244,8 +2295,11 @@ impl Interactivity {
                             .get_or_insert_with(Default::default);
                     }
                     if let Some(active_tooltip) = element_state.active_tooltip.as_ref() {
-                        if self.tooltip_builder.is_some() {
-                            self.tooltip_id = set_tooltip_on_window(active_tooltip, window);
+                        if let Some(builder) = &self.tooltip_builder {
+                            let follow_region = (builder.behavior == TooltipBehavior::FollowCursor)
+                                .then(|| bounds.intersect(&window.content_mask().bounds));
+                            self.tooltip_id =
+                                set_tooltip_on_window(active_tooltip, follow_region, window);
                         } else {
                             // If there is no longer a tooltip builder, remove the active tooltip.
                             element_state.active_tooltip.take();
@@ -2295,6 +2349,7 @@ impl Interactivity {
             || !self.aux_click_listeners.is_empty()
             || !self.scroll_wheel_listeners.is_empty()
             || self.has_pinch_listeners()
+            || self.drag_update.is_some()
             || self.drag_listener.is_some()
             || !self.drop_listeners.is_empty()
             || !self.drag_over_styles.is_empty()
@@ -2758,6 +2813,7 @@ impl Interactivity {
 
         let drag_cursor_style = self.base_style.as_ref().mouse_cursor;
 
+        let drag_update = self.drag_update.take();
         let mut drag_listener = mem::take(&mut self.drag_listener);
         let drop_listeners = mem::take(&mut self.drop_listeners);
         let click_listeners = mem::take(&mut self.click_listeners);
@@ -2801,6 +2857,7 @@ impl Interactivity {
             if !click_listeners.is_empty()
                 || !aux_click_listeners.is_empty()
                 || drag_listener.is_some()
+                || drag_update.is_some()
             {
                 let pending_mouse_down = element_state
                     .pending_mouse_down
@@ -2817,15 +2874,29 @@ impl Interactivity {
                     .get_or_insert_with(Default::default)
                     .clone();
 
+                let drag_started = if drag_update.is_some() {
+                    Some(
+                        element_state
+                            .drag_started
+                            .get_or_insert_with(Default::default)
+                            .clone(),
+                    )
+                } else {
+                    element_state.drag_started.clone()
+                };
                 window.on_mouse_event({
                     let pending_mouse_down = pending_mouse_down.clone();
                     let hitbox = hitbox.clone();
                     let has_aux_click_listeners = !aux_click_listeners.is_empty();
+                    let drag_started = drag_started.clone();
                     move |event: &MouseDownEvent, phase, window, _cx| {
                         if phase == DispatchPhase::Bubble
                             && (event.button == MouseButton::Left || has_aux_click_listeners)
                             && hitbox.is_hovered(window)
                         {
+                            if let Some(started) = &drag_started {
+                                started.set(false);
+                            }
                             *pending_mouse_down.borrow_mut() = Some(event.clone());
                             window.refresh();
                         }
@@ -2835,8 +2906,23 @@ impl Interactivity {
                 window.on_mouse_event({
                     let pending_mouse_down = pending_mouse_down.clone();
                     let hitbox = hitbox.clone();
+                    let drag_started = drag_started.clone();
                     move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Capture {
+                            return;
+                        }
+
+                        if let (Some(update), Some(started)) = (&drag_update, &drag_started)
+                            && event.dragging()
+                            && !cx.has_active_drag()
+                            && let Some(down) = { pending_mouse_down.borrow().clone() }
+                            && down.button == MouseButton::Left
+                            && (started.get()
+                                || (event.position - down.position).magnitude() > DRAG_THRESHOLD)
+                        {
+                            started.set(true);
+                            update(&down, event, window, cx);
+                            cx.stop_propagation();
                             return;
                         }
 
@@ -2953,7 +3039,11 @@ impl Interactivity {
                         // propagation.
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
-                            if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
+                            let dragged = drag_started
+                                .as_ref()
+                                .is_some_and(|started| started.replace(false));
+                            if !dragged && pending_mouse_down.is_some() && hitbox.is_hovered(window)
+                            {
                                 captured_mouse_down = pending_mouse_down.take();
                                 window.refresh();
                             } else if pending_mouse_down.is_some() {
@@ -3045,7 +3135,7 @@ impl Interactivity {
                     .get_or_insert_with(Default::default)
                     .clone();
 
-                let tooltip_is_hoverable = tooltip_builder.hoverable;
+                let tooltip_is_hoverable = tooltip_builder.behavior == TooltipBehavior::Hoverable;
                 let build_tooltip = Rc::new(move |window: &mut Window, cx: &mut App| {
                     Some(((tooltip_builder.build)(window, cx), tooltip_is_hoverable))
                 });
@@ -3381,6 +3471,9 @@ impl Interactivity {
         if let Some(keyshortcuts) = &self.aria.keyshortcuts {
             node.set_keyboard_shortcut(keyshortcuts.to_string());
         }
+        if self.aria.disabled {
+            node.set_disabled();
+        }
         if let Some(selected) = self.aria.selected {
             node.set_selected(selected);
         }
@@ -3448,6 +3541,7 @@ impl Interactivity {
 /// and scroll offsets.
 #[derive(Default)]
 pub struct InteractiveElementState {
+    drag_started: Option<Rc<Cell<bool>>>,
     pub(crate) focus_handle: Option<FocusHandle>,
     pub(crate) clicked_state: Option<Rc<RefCell<ElementClickedState>>>,
     pub(crate) hover_state: Option<Rc<RefCell<ElementHoverState>>>,
@@ -3538,6 +3632,7 @@ pub(crate) fn clear_active_tooltip_if_not_hoverable(
 
 pub(crate) fn set_tooltip_on_window(
     active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
+    follow_region: Option<Bounds<Pixels>>,
     window: &mut Window,
 ) -> Option<TooltipId> {
     let tooltip = match active_tooltip.borrow().as_ref() {
@@ -3546,7 +3641,7 @@ pub(crate) fn set_tooltip_on_window(
         Some(ActiveTooltip::Visible { tooltip, .. }) => tooltip.clone(),
         Some(ActiveTooltip::WaitingForHide { tooltip, .. }) => tooltip.clone(),
     };
-    Some(window.set_tooltip(tooltip))
+    Some(window.request_tooltip(tooltip, follow_region))
 }
 
 pub(crate) fn register_tooltip_mouse_handlers(
@@ -3997,6 +4092,7 @@ impl ScrollAnchor {
 
 #[derive(Default, Debug)]
 struct ScrollHandleState {
+    list_axis: Option<crate::Axis>,
     offset: Rc<RefCell<Point<Pixels>>>,
     ongoing_scroll: Rc<RefCell<OngoingScroll>>,
     bounds: Bounds<Pixels>,
@@ -4036,6 +4132,14 @@ impl ScrollHandle {
     /// Construct a new scroll handle.
     pub fn new() -> Self {
         Self(Rc::default())
+    }
+
+    pub(super) fn set_list_axis(&self, axis: crate::Axis) {
+        self.0.borrow_mut().list_axis = Some(axis);
+    }
+
+    pub(super) fn list_axis(&self) -> crate::Axis {
+        self.0.borrow().list_axis.unwrap_or(crate::Axis::Vertical)
     }
 
     /// Get the current scroll offset.

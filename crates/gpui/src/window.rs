@@ -44,7 +44,6 @@ use std::{
     any::{Any, TypeId},
     borrow::Cow,
     cell::{Cell, RefCell},
-    cmp,
     fmt::{Debug, Display},
     hash::{Hash, Hasher},
     marker::PhantomData,
@@ -879,13 +878,43 @@ impl TooltipId {
     }
 }
 
+fn tooltip_axis_origin(
+    anchor: Pixels,
+    extent: Pixels,
+    viewport: Pixels,
+    source: Option<Range<Pixels>>,
+) -> Pixels {
+    let room = (viewport - extent).max(px(0.));
+    let (gap, inset) = if source.is_some() {
+        (px(12.), px(6.).min(room / 2.))
+    } else {
+        (px(1.), px(0.))
+    };
+    let after = anchor + gap;
+    let before = anchor - gap - extent;
+    let fits = |start: Pixels, end: Pixels| {
+        [after, before]
+            .into_iter()
+            .find(|origin| *origin >= start && *origin + extent <= end)
+    };
+    if let Some(region) = source
+        && let Some(origin) = fits(region.start.max(inset), region.end.min(viewport - inset))
+    {
+        return origin;
+    }
+    fits(inset, viewport - inset)
+        .unwrap_or_else(|| (anchor - extent / 2.).clamp(inset, room - inset))
+}
+
 pub(crate) struct TooltipBounds {
+    follows_cursor: bool,
     id: TooltipId,
     bounds: Bounds<Pixels>,
 }
 
 #[derive(Clone)]
 pub(crate) struct TooltipRequest {
+    follow_region: Option<Bounds<Pixels>>,
     id: TooltipId,
     tooltip: AnyTooltip,
 }
@@ -1987,6 +2016,23 @@ impl Window {
                 break;
             }
         }
+    }
+
+    /// Observes native window moves, resizes, and display-scale changes.
+    /// Drop the subscription to stop observing.
+    pub fn observe_bounds(
+        &self,
+        mut callback: impl FnMut(&mut Window, &mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) = self.bounds_observers.insert(
+            (),
+            Box::new(move |window, cx| {
+                callback(window, cx);
+                true
+            }),
+        );
+        activate();
+        subscription
     }
 
     /// Registers a callback to be invoked when the window appearance changes.
@@ -3170,39 +3216,31 @@ impl Window {
                 continue;
             };
             let mut element = tooltip_request.tooltip.view.clone().into_any_element();
-            let mouse_position = tooltip_request.tooltip.mouse_position;
-            let tooltip_size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
-
-            let mut tooltip_bounds =
-                Bounds::new(mouse_position + point(px(1.), px(1.)), tooltip_size);
-            let window_bounds = Bounds {
-                origin: Point::default(),
-                size: self.viewport_size(),
+            let region = tooltip_request.follow_region;
+            let anchor = if region.is_some() {
+                self.mouse_position()
+            } else {
+                tooltip_request.tooltip.mouse_position
             };
-
-            if tooltip_bounds.right() > window_bounds.right() {
-                let new_x = mouse_position.x - tooltip_bounds.size.width - px(1.);
-                if new_x >= Pixels::ZERO {
-                    tooltip_bounds.origin.x = new_x;
-                } else {
-                    tooltip_bounds.origin.x = cmp::max(
-                        Pixels::ZERO,
-                        tooltip_bounds.origin.x - tooltip_bounds.right() - window_bounds.right(),
-                    );
-                }
-            }
-
-            if tooltip_bounds.bottom() > window_bounds.bottom() {
-                let new_y = mouse_position.y - tooltip_bounds.size.height - px(1.);
-                if new_y >= Pixels::ZERO {
-                    tooltip_bounds.origin.y = new_y;
-                } else {
-                    tooltip_bounds.origin.y = cmp::max(
-                        Pixels::ZERO,
-                        tooltip_bounds.origin.y - tooltip_bounds.bottom() - window_bounds.bottom(),
-                    );
-                }
-            }
+            let extent = element.layout_as_root(AvailableSpace::min_size(), self, cx);
+            let viewport = self.viewport_size();
+            let tooltip_bounds = Bounds::new(
+                point(
+                    tooltip_axis_origin(
+                        anchor.x,
+                        extent.width,
+                        viewport.width,
+                        region.map(|b| b.left()..b.right()),
+                    ),
+                    tooltip_axis_origin(
+                        anchor.y,
+                        extent.height,
+                        viewport.height,
+                        region.map(|b| b.top()..b.bottom()),
+                    ),
+                ),
+                extent,
+            );
 
             // It's possible for an element to have an active tooltip while not being painted (e.g.
             // via the `visible_on_hover` method). Since mouse listeners are not active in this
@@ -3218,6 +3256,7 @@ impl Window {
             });
 
             self.tooltip_bounds = Some(TooltipBounds {
+                follows_cursor: region.is_some() && extent.width > px(0.) && extent.height > px(0.),
                 id: tooltip_request.id,
                 bounds: tooltip_bounds,
             });
@@ -3505,13 +3544,23 @@ impl Window {
     }
 
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called
-    /// during the paint phase of element drawing.
+    /// during the prepaint phase of element drawing.
     pub fn set_tooltip(&mut self, tooltip: AnyTooltip) -> TooltipId {
+        self.request_tooltip(tooltip, None)
+    }
+
+    pub(crate) fn request_tooltip(
+        &mut self,
+        tooltip: AnyTooltip,
+        follow_region: Option<Bounds<Pixels>>,
+    ) -> TooltipId {
         self.invalidator.debug_assert_prepaint();
         let id = TooltipId(post_inc(&mut self.next_tooltip_id.0));
-        self.next_frame
-            .tooltip_requests
-            .push(Some(TooltipRequest { id, tooltip }));
+        self.next_frame.tooltip_requests.push(Some(TooltipRequest {
+            id,
+            tooltip,
+            follow_region,
+        }));
         id
     }
 
@@ -4982,6 +5031,14 @@ impl Window {
             // Track the mouse position with our own state, since accessing the platform
             // API for the mouse position can only occur on the main thread.
             PlatformInput::MouseMove(mouse_move) => {
+                if self.mouse_position != mouse_move.position
+                    && self
+                        .tooltip_bounds
+                        .as_ref()
+                        .is_some_and(|tooltip| tooltip.follows_cursor)
+                {
+                    self.invalidator.set_dirty(true);
+                }
                 self.mouse_position = mouse_move.position;
                 self.modifiers = mouse_move.modifiers;
                 PlatformInput::MouseMove(mouse_move)
@@ -6848,6 +6905,27 @@ mod tests {
         StatefulInteractiveElement as _, Styled, TestAppContext, Window, WindowAppearance,
         WindowOptions, canvas, div, point, px, size,
     };
+
+    #[test]
+    fn tooltip_placement_uses_remaining_space_when_neither_side_fits() {
+        use super::tooltip_axis_origin;
+        assert_eq!(
+            tooltip_axis_origin(px(150.), px(240.), px(300.), None),
+            px(30.)
+        );
+        assert_eq!(
+            tooltip_axis_origin(px(90.), px(240.), px(180.), None),
+            px(0.)
+        );
+        assert_eq!(
+            tooltip_axis_origin(px(80.), px(64.), px(320.), None),
+            px(81.)
+        );
+        assert_eq!(
+            tooltip_axis_origin(px(300.), px(64.), px(320.), None),
+            px(235.)
+        );
+    }
 
     #[gpui::test]
     fn test_drag_cursor_applies_before_next_paint(cx: &mut TestAppContext) {

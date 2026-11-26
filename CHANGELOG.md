@@ -2,6 +2,19 @@
 
 All notable user-visible changes are recorded here.
 
+## [0.7.0] (unreleased)
+
+- Add horizontal uniform lists with known item widths, visible-range rendering,
+  and indexed scrolling through the existing scroll handle.
+- Add `cursor_tooltip` for pointer-following overlays. Prefer placement within
+  the visible source element and clamp tooltips to the viewport when neither
+  side of the pointer has enough room.
+- Reuse uniform-list item measurements within a frame and allow callers to
+  supply a known item size. Preserve row spacing at deep scroll offsets and
+  clamp flipped lists when their content shrinks.
+- Add `on_drag_update` for tracked left-button gestures, `aria_disabled` for
+  accessible controls, and `Window::observe_bounds` for window-level observers.
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed
