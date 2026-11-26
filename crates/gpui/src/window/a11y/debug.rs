@@ -259,6 +259,9 @@ fn node_to_json(
     }
 
     // Boolean / enum states.
+    if node.is_disabled() {
+        aria.insert("disabled".into(), json!(true));
+    }
     if let Some(v) = node.is_selected() {
         aria.insert("selected".into(), json!(v));
     }
